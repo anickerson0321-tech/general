@@ -4,6 +4,7 @@ import { Modal, SongRow, useCoverUrl } from '../ui/components'
 import type { Song } from '../state/models'
 import { I } from '../ui/icons'
 import { navigate } from '../ui/router'
+import { UploadButton } from '../ui/UploadModal'
 import { uid } from '../lib/id'
 import { formatTime } from '../lib/audio'
 import { describeLevel } from '../dsp'
@@ -66,6 +67,7 @@ export function LibraryPage({ tab = 'songs' }: { tab?: string }) {
             </select>
           </>
         )}
+        {(tab === 'songs' || tab === 'liked') && <UploadButton />}
         {tab === 'playlists' && (
           <button className="btn" onClick={() => setNewPl(true)}>
             <I.plus /> New playlist

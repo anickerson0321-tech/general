@@ -238,6 +238,7 @@ export async function prepareKaraoke(id: string, audio?: RemoteAudio, words?: Ti
   const { patchSong } = useApp.getState()
   const song = getSong(id)
   if (!song || song.engine === 'local' || !song.mixKey) return
+  if (song.kind === 'my version') return
   const engine = song.engine as 'fal' | 'elevenlabs'
   const provider = PROVIDERS[engine]
   const set = (label: string) => patchSong(id, { karaoke: 'processing', karaokeLabel: label }, false)
@@ -313,3 +314,70 @@ export async function prepareKaraoke(id: string, audio?: RemoteAudio, words?: Ti
 }
 
 export { friendlyError }
+
+/** Import the user's own audio file as a song and prepare it for karaoke. */
+export async function uploadSong(file: File, opts: { title: string; lyricsText: string }): Promise<string> {
+  const { upsertSong, settings, patchSong } = useApp.getState()
+  const engine: EngineId = settings.keys.fal ? 'fal' : settings.keys.elevenlabs ? 'elevenlabs' : 'local'
+  const decodedBuf = await decodeBlob(file)
+  const id = uid('s')
+  const mixKey = uid('a')
+  await putBlob(mixKey, file)
+  const song: Song = {
+    id,
+    createdAt: Date.now(),
+    title: opts.title || file.name.replace(/\.[^.]+$/, ''),
+    style: 'Uploaded audio',
+    lyricsText: opts.lyricsText,
+    instrumental: false,
+    engine,
+    modelLabel: 'upload',
+    status: 'ready',
+    progress: 1,
+    progressLabel: 'Ready',
+    durationSec: decodedBuf.duration,
+    tags: [],
+    coverSeed: randomSeed(),
+    liked: false,
+    plays: 0,
+    batchId: uid('b'),
+    kind: 'upload',
+    workspace: 'My Workspace',
+    takes: [],
+    params: { weirdness: 0.5, styleInfluence: 0.5, vocalGender: 'any', seed: 0 },
+    mixKey,
+    karaoke: 'processing',
+    karaokeLabel: 'Preparing karaoke',
+  }
+  upsertSong(song)
+  if (engine !== 'local') {
+    void prepareKaraoke(id, { blob: file }, undefined, decodedBuf)
+  } else {
+    // Offline: classic center-channel vocal reduction (vocals are usually panned center).
+    try {
+      const l = decodedBuf.getChannelData(0)
+      const r = decodedBuf.numberOfChannels > 1 ? decodedBuf.getChannelData(1) : l
+      const L = new Float32Array(l.length)
+      const R = new Float32Array(l.length)
+      // keep the low end (bass/kick are also centered) with a simple one-pole split
+      let lowL = 0
+      let lowR = 0
+      const a = Math.exp((-2 * Math.PI * 160) / decodedBuf.sampleRate)
+      for (let i = 0; i < l.length; i++) {
+        lowL = a * lowL + (1 - a) * l[i]
+        lowR = a * lowR + (1 - a) * r[i]
+        const side = (l[i] - lowL - (r[i] - lowR)) * 0.5
+        L[i] = lowL + side
+        R[i] = lowR - side
+      }
+      const mp3 = await encodeMp3InWorker({ sampleRate: decodedBuf.sampleRate, left: L, right: R }, 192)
+      const instrumentalKey = uid('a')
+      await putBlob(instrumentalKey, new Blob([mp3 as Uint8Array<ArrayBuffer>], { type: 'audio/mpeg' }))
+      const key = await detectKeyInWorker(audioBufferToMono(decodedBuf))
+      patchSong(id, { instrumentalKey, key, karaoke: 'ready', karaokeLabel: undefined, timedLyrics: [] })
+    } catch (e) {
+      patchSong(id, { karaoke: 'error', karaokeError: friendlyError(e) })
+    }
+  }
+  return id
+}

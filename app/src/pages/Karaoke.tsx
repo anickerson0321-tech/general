@@ -14,6 +14,7 @@ import { uid } from '../lib/id'
 import { Cover, Slider, Spinner, Toggle, useCoverUrl } from '../ui/components'
 import { I } from '../ui/icons'
 import { navigate } from '../ui/router'
+import { UploadButton } from '../ui/UploadModal'
 
 export function KaraokePage({ id }: { id?: string }) {
   if (!id) return <KaraokePicker />
@@ -27,6 +28,9 @@ function KaraokePicker() {
     <div className="page">
       <h1 className="page-title">Karaoke</h1>
       <p className="page-sub">Pick a song, put on headphones, and sing. Your voice is recorded so you can polish it afterwards.</p>
+      <div style={{ marginBottom: 16 }}>
+        <UploadButton label="Sing your own song (upload)" />
+      </div>
       {singable.length === 0 ? (
         <div className="empty">
           No songs with vocals yet.{' '}

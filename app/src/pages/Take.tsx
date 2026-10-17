@@ -123,7 +123,7 @@ function TakeEditor({ song, take }: { song: Song; take: Take }) {
           toast(`Processing failed: ${e instanceof Error ? e.message : e}`, 'error')
         }
       }
-    }, 120)
+    }, 300)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raw, analysis, guide, committed, robotic, offset])

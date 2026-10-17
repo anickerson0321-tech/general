@@ -47,9 +47,30 @@ async function falRun<T>(endpoint: string, input: Record<string, unknown>, ctx: 
   return (await res.json()) as T
 }
 
-async function urlFor(a: RemoteAudio): Promise<string> {
-  // fal accepts data URIs for file inputs; prefer the hosted URL when we have one
-  return a.url ?? blobToDataUri(a.blob)
+/** Upload a local file to fal storage and return its URL (falls back to a data URI). */
+async function uploadToFal(blob: Blob, ctx: CloudCtx): Promise<string> {
+  try {
+    const init = await fetch(withProxy('https://rest.alpha.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3', ctx.proxy), {
+      method: 'POST',
+      headers: { Authorization: `Key ${ctx.key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content_type: blob.type || 'audio/mpeg', file_name: `encore-${Date.now()}.${/wav/.test(blob.type) ? 'wav' : 'mp3'}` }),
+      signal: ctx.signal,
+    })
+    if (!init.ok) throw new ApiError(await readError(init), init.status)
+    const { upload_url, file_url } = (await init.json()) as { upload_url: string; file_url: string }
+    const put = await fetch(upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type || 'audio/mpeg' }, body: blob, signal: ctx.signal })
+    if (!put.ok) throw new ApiError(await readError(put), put.status)
+    return file_url
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) throw e
+    return blobToDataUri(blob)
+  }
+}
+
+async function urlFor(a: RemoteAudio, ctx: CloudCtx): Promise<string> {
+  if (a.url) return a.url
+  a.url = await uploadToFal(a.blob, ctx)
+  return a.url
 }
 
 async function toRemote(f: FalFile | undefined, ctx: CloudCtx): Promise<RemoteAudio> {
@@ -118,7 +139,7 @@ export const falProvider: CloudProvider = {
   async separateStems(audio, ctx) {
     const out = await falRun<Record<string, FalFile | undefined>>(
       'fal-ai/demucs',
-      { audio_url: await urlFor(audio), model: 'htdemucs', stems: ['vocals', 'drums', 'bass', 'other'], output_format: 'mp3' },
+      { audio_url: await urlFor(audio, ctx), model: 'htdemucs', stems: ['vocals', 'drums', 'bass', 'other'], output_format: 'mp3' },
       ctx,
       'Separating vocals',
     )
@@ -131,7 +152,7 @@ export const falProvider: CloudProvider = {
   async alignWords(vocals, text, ctx) {
     const out = await falRun<{ words?: { text: string; start: number; end: number }[] }>(
       'fal-ai/elevenlabs/forced-alignment',
-      { audio_url: await urlFor(vocals), text },
+      { audio_url: await urlFor(vocals, ctx), text },
       ctx,
       'Timing lyrics',
     )
@@ -140,7 +161,7 @@ export const falProvider: CloudProvider = {
   async transcribeWords(vocals, ctx) {
     const out = await falRun<{ words?: { text: string; start: number; end: number; type?: string }[] }>(
       'fal-ai/elevenlabs/speech-to-text/scribe-v2',
-      { audio_url: await urlFor(vocals), tag_audio_events: false },
+      { audio_url: await urlFor(vocals, ctx), tag_audio_events: false },
       ctx,
       'Listening to lyrics',
     )

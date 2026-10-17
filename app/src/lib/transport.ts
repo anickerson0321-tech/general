@@ -173,10 +173,9 @@ export class Transport {
     else this.pausedAt = target
   }
 
+  /** Stop and drop all tracks. The transport stays usable (React StrictMode re-mounts effects). */
   dispose() {
     this.pause()
     for (const id of [...this.tracks.keys()]) this.removeTrack(id)
-    this.master.disconnect()
-    this.analyser.disconnect()
   }
 }
