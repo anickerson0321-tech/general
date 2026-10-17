@@ -395,7 +395,7 @@ export function analyzeStyle(style: string, exclude?: string): StyleProfile {
   if (sc('rnb') > 0 && sc('pop') > 0 && sc('rnb') >= sc('pop') * 0.8) scores.set('pop', sc('pop') * 0.6)
   const ranked = [...scores.entries()].filter(([, s]) => s > 0.05).sort((a, b) => b[1] - a[1])
   const genre: GenreId = ranked.length ? ranked[0][0] : 'pop'
-  const secondary = ranked.slice(1, 3).map(([g]) => g)
+  const secondary = ranked.slice(1, 3).filter(([, s]) => s >= ranked[0][1] * 0.55).map(([g]) => g)
   const def = GENRE_BY_ID[genre]
   // ------------------------------------------------ moods
   const moods: string[] = []

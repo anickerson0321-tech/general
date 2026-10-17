@@ -147,7 +147,8 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
           const pos = bar16 + h.p
           if (pos >= songEnd16) continue
           const jitter = (r.next() - 0.5) * 2 * human
-          hits.push({ t: Math.max(0, t16(pos) + jitter + (h.inst === 'k' || h.inst === 'crash' ? 0 : 0)), inst: h.inst, vel: h.vel })
+          const boost = drumStyle === 'trap' && (h.inst === 'clap' || h.inst === 's') ? 1.6 : 1
+          hits.push({ t: Math.max(0, t16(pos) + jitter), inst: h.inst, vel: h.vel * boost })
         }
       }
     }
@@ -244,7 +245,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
         bassNotes.push({ t: tS, dur: Math.max(0.05, (tE - tS) * gate), midi: m, vel: ev.c === 'R' && ev.p % 16 === 0 ? 1 : 0.85 })
       }
     }
-    const bassGain = kind === '808' ? 0.62 : kind === 'sub' ? 0.6 : kind === 'synth' ? 0.5 : 0.62
+    const bassGain = kind === '808' ? 0.42 : kind === 'sub' ? 0.6 : kind === 'synth' ? 0.5 : 0.62
     bassNotes.forEach((n, i) => renderBass(bus, kind, n, bassGain * n.vel, p.sidechain, mixSeed(seed, 'b', i), bright))
   }
   await step(0.4, 'Playing bass')
@@ -368,7 +369,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
         takes.forEach((pan, ti) => {
           const off = ti * 0.007
           if (final || (lvl === 0 && g !== 'metal')) {
-            renderStrum(bus, 'distorted', { t: t0 + off, dur: Math.min(spanDur, final ? 3 : spanDur), notes, vel: 0.8, dir: 1 }, 0.32, pan, 0.1 * revAmt, mixSeed(seed, span.p0, ti))
+            renderStrum(bus, 'distorted', { t: t0 + off, dur: Math.min(spanDur, final ? 3 : spanDur), notes, vel: 0.8, dir: 1 }, 0.45, pan, 0.1 * revAmt, mixSeed(seed, span.p0, ti))
             return
           }
           const chug = g === 'metal' ? (lvl >= 2 ? 'x.xxx.xxx.xxx.xx' : 'x.x.x.x.x.x.x.x.') : g === 'punk' ? 'x.x.x.x.x.x.x.x.' : lvl >= 2 ? 'x.x.x.x.x.x.x.x.' : 'x.....x.x.......'
@@ -376,7 +377,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
             const mute = g === 'metal' ? ev.p % 4 !== 0 : lvl < 2
             const tS = t16(span.p0 + ev.p) + off
             const dur = mute ? plan.spb * 0.24 : Math.max(plan.spb * 0.45, t16(span.p0 + ev.p + (ev.l > 1 ? ev.l : 2)) - tS)
-            renderStrum(bus, 'distorted', { t: tS, dur, notes: mute ? notes.slice(0, 2) : notes, vel: 0.85, dir: 1, mute }, 0.3, pan, 0.08 * revAmt, mixSeed(seed, span.p0, ev.p, ti))
+            renderStrum(bus, 'distorted', { t: tS, dur, notes: mute ? notes.slice(0, 2) : notes, vel: 0.85, dir: 1, mute }, 0.42, pan, 0.08 * revAmt, mixSeed(seed, span.p0, ev.p, ti))
           }
         })
         continue
@@ -387,7 +388,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
       const bassN = pcInRange(span.chord.bass, 40)
       const full = kind === 'skank' ? v5.map((x) => (x < 60 ? x + 12 : x)) : [bassN, ...v5]
       const pan = gp.layer === 0 ? (guitarParts.length > 1 ? -0.4 : -0.3) : 0.4
-      const gain = kind === 'acoustic' ? 0.24 : kind === 'nylon' ? 0.3 : kind === 'skank' ? 0.32 : 0.24
+      const gain = kind === 'acoustic' ? 0.6 : kind === 'nylon' ? 0.6 : kind === 'skank' ? 0.6 : 0.48
       const rev = (kind === 'clean' ? 0.2 : 0.14) * revAmt
       if (final) {
         renderStrum(bus, kind, { t: t0, dur: 3, notes: full, vel: 0.75, dir: 1 }, gain, pan, rev, mixSeed(seed, 'gf'))
@@ -430,14 +431,14 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
 
   // ================================================================ PADS / STRINGS / CHOIR / BRASS
   const padLayers: Array<{ kind: PadKind; min: number; lo: number; hi: number; gain: number; rev: number; only?: (s: SectionPlan) => boolean }> = []
-  if (inst.pad === 'warm') padLayers.push({ kind: 'warm', min: g === 'synthwave' ? 0 : 0.45, lo: 52, hi: 74, gain: 0.32, rev: 0.35 })
+  if (inst.pad === 'warm') padLayers.push({ kind: 'warm', min: g === 'synthwave' ? 0 : 0.45, lo: 52, hi: 74, gain: 0.18, rev: 0.35 })
   if (inst.pad === 'supersaw') {
-    padLayers.push({ kind: 'supersaw', min: 0.74, lo: 55, hi: 79, gain: 0.2, rev: 0.25 })
-    padLayers.push({ kind: 'warm', min: 0.3, lo: 52, hi: 72, gain: 0.26, rev: 0.35, only: (s) => s.energy < 0.74 })
+    padLayers.push({ kind: 'supersaw', min: 0.74, lo: 55, hi: 79, gain: 0.14, rev: 0.25 })
+    padLayers.push({ kind: 'warm', min: 0.3, lo: 52, hi: 72, gain: 0.15, rev: 0.35, only: (s) => s.energy < 0.74 })
   }
-  if (inst.pad === 'strings' || inst.strings) padLayers.push({ kind: 'strings', min: g === 'cinematic' ? 0 : g === 'ballad' ? 0.48 : 0.55, lo: 55, hi: 81, gain: 0.3, rev: 0.45 })
-  if (inst.pad === 'choir' || inst.choir) padLayers.push({ kind: 'choir', min: g === 'gospel' ? 0.6 : 0.7, lo: 55, hi: 74, gain: 0.32, rev: 0.5 })
-  if (inst.brass && g === 'cinematic') padLayers.push({ kind: 'brass', min: 0.72, lo: 46, hi: 64, gain: 0.3, rev: 0.4 })
+  if (inst.pad === 'strings' || inst.strings) padLayers.push({ kind: 'strings', min: g === 'cinematic' ? 0 : g === 'ballad' ? 0.48 : 0.55, lo: 55, hi: 81, gain: 0.15, rev: 0.45 })
+  if (inst.pad === 'choir' || inst.choir) padLayers.push({ kind: 'choir', min: g === 'gospel' ? 0.6 : 0.7, lo: 55, hi: 74, gain: 0.22, rev: 0.5 })
+  if (inst.brass && g === 'cinematic') padLayers.push({ kind: 'brass', min: 0.72, lo: 46, hi: 64, gain: 0.22, rev: 0.4 })
   for (const layer of padLayers) {
     let prevV: number[] | null = null
     for (const span of sp) {
@@ -478,7 +479,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
       const v = voiceChord(span.chord, null, 60, 79, 4)
       const seq = shape === 'up' ? [...v, v[0] + 12] : shape === 'updown' ? [...v, v[0] + 12, ...v.slice(1).reverse()] : [v[0], v[2], v[1], v[3], v[0] + 12, v[2]]
       for (let q = 0, k = 0; q < span.len16; q += rate, k++) {
-        renderPluck(bus, 'arp', { t: t16(span.p0 + q), dur: plan.spb * 0.2 * rate, midi: seq[k % seq.length], vel: q % 4 === 0 ? 0.8 : 0.6 }, 0.2, 0.3, 0.18 * revAmt, 0.3, bright)
+        renderPluck(bus, 'arp', { t: t16(span.p0 + q), dur: plan.spb * 0.2 * rate, midi: seq[k % seq.length], vel: q % 4 === 0 ? 0.8 : 0.6 }, 0.45, 0.3, 0.18 * revAmt, 0.3, bright)
       }
     }
   }
@@ -533,7 +534,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
       }
       addPhraseNotes(lns)
     }
-    const leadGain = kind === 'pluck' || kind === 'bell' ? 0.32 : kind === 'piano' ? 0.3 : kind === 'guitar' ? 0.34 : 0.3
+    const leadGain = kind === 'pluck' || kind === 'bell' ? 0.8 : kind === 'piano' ? 0.7 : kind === 'guitar' ? 0.75 : 0.8
     phrases.forEach((ph, i) => {
       renderLeadPhrase(bus, kind, ph, leadGain, 0.08, 0.22 * revAmt, 0.16, bright, mixSeed(seed, 'lead', i))
       for (const n of ph) leadNotes.push({ start: n.t, end: n.t + n.dur, midi: n.midi })

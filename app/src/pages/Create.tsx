@@ -105,6 +105,7 @@ export function CreatePage({ query }: { query: URLSearchParams }) {
           if (!f.title) f.title = r.title
         }
         if (!f.style.trim()) f.style = suggestStyles(randomSeed())
+        if (!f.title.trim()) f.title = titleFromLyrics(f.lyrics) || f.style.split(',')[0]
       }
       createSongs({
         title: f.title || 'Untitled',
@@ -365,4 +366,14 @@ const IDEAS = [
 ]
 function randomIdea() {
   return IDEAS[Math.floor(Math.random() * IDEAS.length)]
+}
+
+/** Suno-style auto title: the hook (first chorus line), else the first sung line. */
+function titleFromLyrics(lyrics: string): string {
+  const lines = lyrics.split('\n').map((l) => l.trim())
+  const ci = lines.findIndex((l) => /^\[(chorus|hook|refrain)/i.test(l))
+  const pick = (ci >= 0 ? lines.slice(ci + 1) : lines).find((l) => l && !l.startsWith('['))
+  if (!pick) return ''
+  const words = pick.replace(/\(.*?\)/g, '').replace(/[^\w' ]+/g, '').trim().split(/\s+/).slice(0, 5)
+  return words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ')
 }

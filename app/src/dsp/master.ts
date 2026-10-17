@@ -106,36 +106,33 @@ const TP_PHASES: Float64Array[] = (() => {
   return out
 })()
 
-/** Peak envelope including inter-sample (4x oversampled) peaks; max over channels. */
-export function truePeakEnvelope(chs: Float32Array[], checkAbove: number): Float32Array {
-  const n = chs[0].length
-  const env = new Float32Array(n)
-  for (const x of chs) {
-    for (let i = 0; i < n; i++) {
-      const a = Math.abs(x[i])
-      let pk = a
-      const b = i + 1 < n ? Math.abs(x[i + 1]) : 0
-      if (a > checkAbove || b > checkAbove) {
-        for (const taps of TP_PHASES) {
-          let s = 0
-          for (let j = -3; j <= 4; j++) {
-            const idx = i + j
-            if (idx >= 0 && idx < n) s += taps[j + 3] * x[idx]
-          }
-          const v = Math.abs(s)
-          if (v > pk) pk = v
-        }
+/** |x| at sample i, or the largest 4x-oversampled inter-sample peak between i and i+1 when either is above `checkAbove`. */
+function tpAt(x: Float32Array, i: number, checkAbove: number): number {
+  const n = x.length
+  const a = Math.abs(x[i])
+  const b = i + 1 < n ? Math.abs(x[i + 1]) : 0
+  let pk = a
+  if (a > checkAbove || b > checkAbove) {
+    for (const taps of TP_PHASES) {
+      let s = 0
+      for (let j = -3; j <= 4; j++) {
+        const idx = i + j
+        if (idx >= 0 && idx < n) s += taps[j + 3] * x[idx]
       }
-      if (pk > env[i]) env[i] = pk
+      const v = Math.abs(s)
+      if (v > pk) pk = v
     }
   }
-  return env
+  return pk
 }
 
+/** True peak (linear, 4x oversampled) over all channels. */
 export function truePeak(chs: Float32Array[]): number {
-  const env = truePeakEnvelope(chs, 0)
   let m = 0
-  for (let i = 0; i < env.length; i++) if (env[i] > m) m = env[i]
+  for (const x of chs) for (let i = 0; i < x.length; i++) {
+    const v = tpAt(x, i, 0)
+    if (v > m) m = v
+  }
   return m
 }
 
@@ -145,67 +142,52 @@ export interface LimiterParams {
   releaseMs?: number
 }
 
-/** Stereo-linked look-ahead limiter (in place). Guarantees |sample| ≤ ceiling. */
+/**
+ * Stereo-linked look-ahead limiter (in place, streaming: O(look-ahead) memory).
+ * Gain at n = box-average over L of the release-smoothed minimum of the required gain
+ * over [n, n+L-1], so every (true) peak is reached before it arrives. Guarantees |sample| ≤ ceiling.
+ */
 export function limitStereo(left: Float32Array, right: Float32Array, sr: number, p: LimiterParams): number {
   const n = left.length
   if (n === 0) return 0
   const ceil = Math.pow(10, p.ceilingDb / 20)
   const target = ceil * 0.995
-  const env = truePeakEnvelope([left, right], target * 0.7)
-  const L = Math.max(1, Math.round(((p.lookaheadMs ?? 2) / 1000) * sr))
-  // per-sample required gain
-  const req = new Float32Array(n)
-  let anyOver = false
-  for (let i = 0; i < n; i++) {
-    const e = env[i]
-    if (e > target) {
-      req[i] = target / e
-      anyOver = true
-    } else req[i] = 1
-  }
-  let maxGr = 0
-  if (anyOver) {
-    // min over [i, i+L-1] (look-ahead)
-    const mins = new Float32Array(n)
-    const dq = new Int32Array(n + 1)
-    let h = 0
-    let t = 0
-    let next = 0
-    for (let i = 0; i < n; i++) {
-      const hi = Math.min(n - 1, i + L - 1)
-      while (next <= hi) {
-        while (t > h && req[dq[t - 1]] >= req[next]) t--
-        dq[t++] = next++
-      }
-      while (dq[h] < i) h++
-      mins[i] = req[dq[h]]
+  const check = target * 0.7
+  const L = Math.max(5, Math.round(((p.lookaheadMs ?? 2) / 1000) * sr))
+  const aRel = Math.exp(-1 / (((p.releaseMs ?? 80) / 1000) * sr))
+  const R = L + 1
+  const reqRing = new Float64Array(R)
+  const dq = new Int32Array(R)
+  let h = 0 // deque head/tail as running counters (mod R)
+  let t = 0
+  const box = new Float64Array(L).fill(1)
+  let sum = L
+  let st = 1
+  let minG = 1
+  for (let k = 0; k < n + L - 1; k++) {
+    let r = 1
+    if (k < n) {
+      const e = Math.max(tpAt(left, k, check), tpAt(right, k, check))
+      if (e > target) r = target / e
     }
-    // instant attack, exponential release
-    const aRel = Math.exp(-1 / (((p.releaseMs ?? 80) / 1000) * sr))
-    let st = 1
-    for (let i = 0; i < n; i++) {
-      const v = mins[i]
-      st = v < st ? v : v + (st - v) * aRel
-      mins[i] = st
+    reqRing[k % R] = r
+    while (t > h && reqRing[dq[(t - 1) % R] % R] >= r) t--
+    dq[t % R] = k
+    t++
+    const ni = k - (L - 1)
+    if (ni < 0) continue
+    while (dq[h % R] < ni) h++
+    const m = reqRing[dq[h % R] % R]
+    st = m < st ? m : m + (st - m) * aRel
+    const bi = ni % L
+    sum += st - box[bi]
+    box[bi] = st
+    const g = sum / L
+    if (g < 1) {
+      left[ni] *= g
+      right[ni] *= g
+      if (g < minG) minG = g
     }
-    // box filter of length L (gain reaches the target before each peak)
-    let acc = 0
-    const g = new Float32Array(n)
-    for (let i = 0; i < n; i++) {
-      acc += mins[i]
-      if (i >= L) acc -= mins[i - L]
-      const cnt = Math.min(L, i + 1)
-      // pad history with 1.0 at the start
-      g[i] = (acc + (L - cnt)) / L
-    }
-    let minG = 1
-    for (let i = 0; i < n; i++) {
-      const gi = g[i]
-      left[i] *= gi
-      right[i] *= gi
-      if (gi < minG) minG = gi
-    }
-    maxGr = -20 * Math.log10(minG)
   }
   // final safety: hard ceiling + NaN scrub
   for (let i = 0; i < n; i++) {
@@ -216,5 +198,5 @@ export function limitStereo(left: Float32Array, right: Float32Array, sr: number,
     left[i] = a > ceil ? ceil : a < -ceil ? -ceil : a
     right[i] = b > ceil ? ceil : b < -ceil ? -ceil : b
   }
-  return maxGr
+  return -20 * Math.log10(minG)
 }

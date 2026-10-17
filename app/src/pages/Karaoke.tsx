@@ -403,9 +403,8 @@ function KaraLine({ line, t }: { line: TimedLine; t: number }) {
       {line.words.map((w, i) => {
         const f = Math.max(0, Math.min(1, (t - w.start) / Math.max(0.05, w.end - w.start)))
         return (
-          <span key={i} className="kara-word">
-            {w.text}
-            <span className="fill" style={{ width: `${f * 100}%` }}>
+          <span key={i}>
+            <span className="kara-word" style={{ backgroundSize: `${f * 100}% 100%, 100% 100%` }}>
               {w.text}
             </span>
             {i < line.words.length - 1 ? ' ' : ''}

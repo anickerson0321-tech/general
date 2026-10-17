@@ -111,9 +111,36 @@ export function biquad(src: Float32Array, c: Biquad, dst: Float32Array = src): F
   return dst
 }
 
-/** Cascade of sections, in place. */
+/** Two sections fused in one loop (independent recursions overlap in the CPU pipeline). */
+function cascade2(buf: Float32Array, p: Biquad, q: Biquad): void {
+  const { b0, b1, b2, a1, a2 } = p
+  const c0 = q.b0
+  const c1 = q.b1
+  const c2 = q.b2
+  const d1 = q.a1
+  const d2 = q.a2
+  let z1 = 0
+  let z2 = 0
+  let w1 = 0
+  let w2 = 0
+  const n = buf.length
+  for (let i = 0; i < n; i++) {
+    const x = buf[i]
+    const y = b0 * x + z1
+    z1 = b1 * x - a1 * y + z2
+    z2 = b2 * x - a2 * y
+    const u = c0 * y + w1
+    w1 = c1 * y - d1 * u + w2
+    w2 = c2 * y - d2 * u
+    buf[i] = u
+  }
+}
+
+/** Cascade of sections, in place (pairs of sections are fused). */
 export function cascade(buf: Float32Array, sections: Biquad[]): Float32Array {
-  for (const s of sections) biquad(buf, s)
+  let k = 0
+  for (; k + 1 < sections.length; k += 2) cascade2(buf, sections[k], sections[k + 1])
+  if (k < sections.length) biquad(buf, sections[k])
   return buf
 }
 
@@ -145,3 +172,58 @@ export function dcBlock(buf: Float32Array, sr: number, cutoffHz = 5): Float32Arr
   }
   return buf
 }
+
+/** State for streaming a cascade block by block (2 doubles per section). */
+export function cascadeState(sections: Biquad[]): Float64Array {
+  return new Float64Array(sections.length * 2)
+}
+
+/** Filter `buf` in place, continuing from (and updating) `state`. Used for block streaming. */
+export function cascadeStream(buf: Float32Array, sections: Biquad[], state: Float64Array, len = buf.length): void {
+  let k = 0
+  for (; k + 1 < sections.length; k += 2) {
+    const p = sections[k]
+    const q = sections[k + 1]
+    let z1 = state[2 * k]
+    let z2 = state[2 * k + 1]
+    let w1 = state[2 * k + 2]
+    let w2 = state[2 * k + 3]
+    const { b0, b1, b2, a1, a2 } = p
+    const c0 = q.b0
+    const c1 = q.b1
+    const c2 = q.b2
+    const d1 = q.a1
+    const d2 = q.a2
+    for (let i = 0; i < len; i++) {
+      const x = buf[i]
+      const y = b0 * x + z1
+      z1 = b1 * x - a1 * y + z2
+      z2 = b2 * x - a2 * y
+      const u = c0 * y + w1
+      w1 = c1 * y - d1 * u + w2
+      w2 = c2 * y - d2 * u
+      buf[i] = u
+    }
+    state[2 * k] = z1
+    state[2 * k + 1] = z2
+    state[2 * k + 2] = w1
+    state[2 * k + 3] = w2
+  }
+  if (k < sections.length) {
+    const { b0, b1, b2, a1, a2 } = sections[k]
+    let z1 = state[2 * k]
+    let z2 = state[2 * k + 1]
+    for (let i = 0; i < len; i++) {
+      const x = buf[i]
+      const y = b0 * x + z1
+      z1 = b1 * x - a1 * y + z2
+      z2 = b2 * x - a2 * y
+      buf[i] = y
+    }
+    state[2 * k] = z1
+    state[2 * k + 1] = z2
+  }
+}
+
+/** Block size used by the streaming (low-memory) processors. */
+export const STREAM_BLOCK = 4096

@@ -159,9 +159,20 @@ export interface PsolaOptions {
 }
 
 /** Pitch-shift `x` with TD-PSOLA. Returns a new buffer, sample aligned with `x`. */
-export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions): Float32Array {
+export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions, into?: Float32Array): Float32Array {
   const sr = marks.sr
-  const out = new Float32Array(x)
+  // `into` === x → in place (segment writes are deferred by one segment so that no later
+  // grain reads already-shifted audio); another buffer → filled with the result.
+  const inPlace = into === x
+  const out = into ?? new Float32Array(x)
+  if (!inPlace && into) out.set(x)
+  let pending: { a: number; b: number; lo: number; vals: Float32Array } | null = null
+  const flush = (): void => {
+    if (!pending) return
+    const { a, b, lo, vals } = pending
+    for (let n = a; n <= b; n++) out[n] = vals[n - lo]
+    pending = null
+  }
   const shift = opt.shift
   const hopSec = opt.hopSec
   const preserve = opt.formantPreserve !== false
@@ -252,16 +263,26 @@ export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions): Fl
     const a = Math.ceil(mk[0])
     const b = Math.floor(tEnd)
     const fl = Math.max(1, Math.min(fadeN, Math.floor((b - a) / 3)))
-    for (let n = Math.max(a, lo); n <= Math.min(b, hi - 1); n++) {
+    const na = Math.max(a, lo)
+    const nb = Math.min(b, hi - 1)
+    for (let n = na; n <= nb; n++) {
       const ws = wsum[n - lo]
-      if (ws < 1e-4) continue
-      const v = acc[n - lo] / Math.max(ws, 0.15)
-      let mix = 1
-      if (n - a < fl) mix = (n - a) / fl
-      if (b - n < fl) mix = Math.min(mix, (b - n) / fl)
-      mix = mix * mix * (3 - 2 * mix)
-      out[n] = x[n] + mix * (v - x[n])
+      let res = x[n]
+      if (ws >= 1e-4) {
+        const v = acc[n - lo] / Math.max(ws, 0.15)
+        let mix = 1
+        if (n - a < fl) mix = (n - a) / fl
+        if (b - n < fl) mix = Math.min(mix, (b - n) / fl)
+        mix = mix * mix * (3 - 2 * mix)
+        res = x[n] + mix * (v - x[n])
+      }
+      acc[n - lo] = res
     }
+    if (inPlace) {
+      flush()
+      pending = { a: na, b: nb, lo, vals: acc }
+    } else for (let n = na; n <= nb; n++) out[n] = acc[n - lo]
   }
+  flush()
   return out
 }

@@ -286,50 +286,54 @@ export interface ReverbOpts {
 
 /**
  * Freeverb-style reverb: mono send -> stereo wet, added into outL/outR.
- * Shared comb bank, decorrelated allpass chains per side. Skips silent stretches.
+ * Runs at half sample rate (the wet signal is band-limited anyway) with a shared comb bank and
+ * decorrelated allpass chains per side. Skips silent stretches.
  */
 export function applyReverb(send: Float32Array, outL: Float32Array, outR: Float32Array, o: ReverbOpts): void {
-  const size = o.size ?? 1
-  const combLen = COMBS.map((c) => Math.max(50, Math.round(c * size)))
-  const combs = combLen.map((n) => new Float32Array(n))
+  const HR = SR / 2
+  const size = (o.size ?? 1) * 0.5
+  const combs = COMBS.map((c) => new Float32Array(Math.max(25, Math.round(c * size))))
   const combIdx = new Int32Array(8)
   const combStore = new Float64Array(8)
-  const apL = APS_L.map((n) => new Float32Array(Math.round(n * size)))
-  const apR = APS_R.map((n) => new Float32Array(Math.round(n * size)))
+  const apL = APS_L.map((n) => new Float32Array(Math.max(8, Math.round(n * size))))
+  const apR = APS_R.map((n) => new Float32Array(Math.max(8, Math.round(n * size))))
   const apIL = new Int32Array(4)
   const apIR = new Int32Array(4)
+  // feedback tuned so the decay time matches the full-rate design
   const fb = o.room * 0.28 + 0.7
   const damp1 = o.damp * 0.4
   const damp2 = 1 - damp1
-  const pd = Math.round((o.predelayMs / 1000) * SR)
-  const hpA = Math.exp((-TWO_PI * (o.hpHz ?? 180)) / SR)
-  const lpA = Math.exp((-TWO_PI * (o.lpHz ?? 9000)) / SR)
+  const pd = Math.round((o.predelayMs / 1000) * HR)
+  const hpA = Math.exp((-TWO_PI * (o.hpHz ?? 180)) / HR)
+  const lpA = Math.exp((-TWO_PI * Math.min(o.lpHz ?? 9000, HR * 0.45)) / HR)
   let hpZ = 0
   let lpZ = 0
-  const n = send.length
+  const nh = send.length >> 1
+  const half = new Float32Array(nh)
+  for (let j = 0; j < nh; j++) half[j] = (send[2 * j] + send[2 * j + 1]) * 0.5
   const wet = o.wet * 3
-  const BLOCK = 1024
+  const BLOCK = 512
   let quiet = true
-  let energy = 0
-  for (let b0 = 0; b0 < n; b0 += BLOCK) {
-    const b1 = Math.min(n, b0 + BLOCK)
-    // check for input in this block (taking predelay into account)
+  let pl = 0
+  let pr = 0
+  const n = outL.length
+  for (let b0 = 0; b0 < nh; b0 += BLOCK) {
+    const b1 = Math.min(nh, b0 + BLOCK)
     let hasIn = false
     const s0 = Math.max(0, b0 - pd)
     const s1 = Math.max(0, b1 - pd)
     for (let i = s0; i < s1; i++) {
-      if (send[i] !== 0) {
+      if (half[i] !== 0) {
         hasIn = true
         break
       }
     }
     if (!hasIn && quiet) continue
     if (hasIn) quiet = false
-    energy = 0
+    let energy = 0
     for (let i = b0; i < b1; i++) {
       const j = i - pd
-      const xin = j >= 0 ? send[j] : 0
-      // input band-limiting
+      const xin = j >= 0 ? half[j] : 0
       hpZ = xin + (hpZ - xin) * hpA
       const h = xin - hpZ
       lpZ = h + (lpZ - h) * lpA
@@ -360,8 +364,15 @@ export function applyReverb(send: Float32Array, outL: Float32Array, outR: Float3
         r = bor - r
         apIR[a] = kr + 1 >= br.length ? 0 : kr + 1
       }
-      outL[i] += l * wet
-      outR[i] += r * wet
+      const o0 = 2 * i
+      if (o0 + 1 < n) {
+        outL[o0] += (pl + l) * 0.5 * wet
+        outR[o0] += (pr + r) * 0.5 * wet
+        outL[o0 + 1] += l * wet
+        outR[o0 + 1] += r * wet
+      }
+      pl = l
+      pr = r
       energy += l * l + r * r
     }
     if (!hasIn && energy < 1e-9) {
@@ -370,7 +381,7 @@ export function applyReverb(send: Float32Array, outL: Float32Array, outR: Float3
       for (const a of apL) a.fill(0)
       for (const a of apR) a.fill(0)
       combStore.fill(0)
-      hpZ = lpZ = 0
+      hpZ = lpZ = pl = pr = 0
     }
   }
 }
@@ -477,18 +488,19 @@ export function compress(L: Float32Array, R: Float32Array, o: CompOpts, from = 0
 
 /** BS.1770 integrated loudness (LUFS), with absolute & relative gating. */
 export function measureLufs(L: Float32Array, R: Float32Array): number {
-  const n = L.length
-  const hs1 = new Biquad('highshelf', 1681.97, 0.7072, 4.0)
-  const hp1 = new Biquad('highpass', 38.13, 0.5003)
-  const hs2 = new Biquad('highshelf', 1681.97, 0.7072, 4.0)
-  const hp2 = new Biquad('highpass', 38.13, 0.5003)
-  const sub = Math.round(SR * 0.1)
+  // computed on a 2x decimated signal (filters designed for SR/2) for speed
+  const n = L.length >> 1
+  const hs1 = new Biquad('highshelf', 1681.97 * 2, 0.7072, 4.0)
+  const hp1 = new Biquad('highpass', 38.13 * 2, 0.5003)
+  const hs2 = new Biquad('highshelf', 1681.97 * 2, 0.7072, 4.0)
+  const hp2 = new Biquad('highpass', 38.13 * 2, 0.5003)
+  const sub = Math.round(SR * 0.05)
   const subs: number[] = []
   let acc = 0
   let cnt = 0
   for (let i = 0; i < n; i++) {
-    const l = hp1.process(hs1.process(L[i]))
-    const r = hp2.process(hs2.process(R[i]))
+    const l = hp1.process(hs1.process((L[2 * i] + L[2 * i + 1]) * 0.5))
+    const r = hp2.process(hs2.process((R[2 * i] + R[2 * i + 1]) * 0.5))
     acc += l * l + r * r
     if (++cnt === sub) {
       subs.push(acc / sub)
@@ -510,54 +522,64 @@ export function measureLufs(L: Float32Array, R: Float32Array): number {
 }
 
 /**
- * Offline look-ahead peak limiter, in place. Guarantees |x| <= ceiling
- * (followed by a final hard safety clamp).
+ * Offline look-ahead peak limiter, in place. Block-based gain computer (64-sample blocks):
+ * each block's gain is the minimum required by itself and its neighbours, so the linearly
+ * interpolated per-sample gain never exceeds what any sample needs; release is smoothed upward.
+ * A final hard clamp guarantees |x| <= ceiling.
  */
-export function limit(L: Float32Array, R: Float32Array, ceiling: number, lookMs = 4, releaseMs = 120): void {
+export function limit(L: Float32Array, R: Float32Array, ceiling: number, _lookMs = 4, releaseMs = 120): void {
   const n = L.length
-  const La = Math.max(1, Math.round((lookMs / 1000) * SR))
-  const target = new Float32Array(n)
-  for (let i = 0; i < n; i++) {
-    const p = Math.max(Math.abs(L[i]), Math.abs(R[i]))
-    target[i] = p > ceiling ? ceiling / p : 1
-  }
-  // look-ahead sliding minimum: m[j] = min(target[j..j+La])
-  const m = new Float32Array(n)
-  const dq = new Int32Array(n + 1)
-  let h = 0
-  let t = 0
-  let next = 0
-  for (let j = 0; j < n; j++) {
-    const hi = Math.min(n - 1, j + La)
-    while (next <= hi) {
-      const v = target[next]
-      while (t > h && target[dq[t - 1]] >= v) t--
-      dq[t++] = next
-      next++
+  const B = 64
+  const nb = Math.ceil(n / B)
+  const req = new Float32Array(nb)
+  let any = false
+  for (let b = 0; b < nb; b++) {
+    let p = 0
+    const e = Math.min(n, (b + 1) * B)
+    for (let i = b * B; i < e; i++) {
+      let l = L[i] < 0 ? -L[i] : L[i]
+      let r = R[i] < 0 ? -R[i] : R[i]
+      if (i > 0 && i + 2 < n) {
+        // 2x oversampled (cubic) inter-sample peak estimate
+        const ml = (9 * (L[i] + L[i + 1]) - L[i - 1] - L[i + 2]) * 0.0625
+        const mr = (9 * (R[i] + R[i + 1]) - R[i - 1] - R[i + 2]) * 0.0625
+        const al = ml < 0 ? -ml : ml
+        const ar = mr < 0 ? -mr : mr
+        if (al > l) l = al
+        if (ar > r) r = ar
+      }
+      if (l > p) p = l
+      if (r > p) p = r
     }
-    while (dq[h] < j) h++
-    m[j] = target[dq[h]]
+    req[b] = p > ceiling ? ceiling / p : 1
+    if (p > ceiling) any = true
   }
-  // moving average over [i-La, i]  (<= target[i] guaranteed), then release smoothing
-  const rel = Math.exp(-1 / ((releaseMs / 1000) * SR))
-  let sum = 0
+  if (!any) return
+  const G = new Float32Array(nb + 1)
+  const relStep = 1 - Math.exp(-B / ((releaseMs / 1000) * SR))
   let g = 1
-  for (let i = 0; i < n; i++) {
-    sum += m[i]
-    if (i - La - 1 >= 0) sum -= m[i - La - 1]
-    const cntWin = Math.min(i + 1, La + 1)
-    // pad with 1s before the start
-    const avg = (sum + (La + 1 - cntWin)) / (La + 1)
-    const ga = avg
-    g = ga < g ? ga : ga + (g - ga) * rel
-    let l = L[i] * g
-    let r = R[i] * g
-    if (l > ceiling) l = ceiling
-    else if (l < -ceiling) l = -ceiling
-    if (r > ceiling) r = ceiling
-    else if (r < -ceiling) r = -ceiling
-    L[i] = l
-    R[i] = r
+  for (let b = 0; b < nb; b++) {
+    const m = Math.min(req[b], b > 0 ? req[b - 1] : 1, b + 1 < nb ? req[b + 1] : 1, b + 2 < nb ? req[b + 2] : 1)
+    g = m < g ? m : g + (m - g) * relStep
+    G[b] = g
+  }
+  G[nb] = G[nb - 1]
+  for (let b = 0; b < nb; b++) {
+    const g0 = b > 0 ? G[b - 1] : G[b]
+    const g1 = G[b]
+    const e = Math.min(n, (b + 1) * B)
+    const s0 = b * B
+    for (let i = s0; i < e; i++) {
+      const gg = g0 + ((g1 - g0) * (i - s0)) / B
+      let l = L[i] * gg
+      let r = R[i] * gg
+      if (l > ceiling) l = ceiling
+      else if (l < -ceiling) l = -ceiling
+      if (r > ceiling) r = ceiling
+      else if (r < -ceiling) r = -ceiling
+      L[i] = l
+      R[i] = r
+    }
   }
 }
 

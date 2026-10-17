@@ -296,7 +296,7 @@ export function planSong(req: ComposeRequest): SongPlan {
     beat += beats
   }
   // stretch very short lyric songs toward the duration hint with an instrumental break
-  if (hasLyrics && req.durationHint && beat * spb < req.durationHint * 0.7) {
+  if (hasLyrics && beat * spb < (req.durationHint && req.durationHint > 20 ? req.durationHint : 130) * 0.72) {
     const lastChorus = sections.map((s) => s.motif).lastIndexOf('chorus')
     if (lastChorus > 1) {
       const ins: SectionPlan = { tag: 'Instrumental', label: 'Instrumental', motif: 'inst', startBeat: 0, beats: 32, energy: 0.72, chords: [], lines: [], beatsPerLine: 8, occurrence: 1, index: 0 }

@@ -47,7 +47,9 @@ export function processInstrumental(bus: Bus, plan: SongPlan): void {
   applyDelay(bus.dly, bus.L, bus.R, dsec, 0.38, 0.55, g === 'lofi' ? 2500 : 4500)
   const filters: Array<() => Biquad> = [() => new Biquad('highpass', 28, 0.7), () => new Biquad('peak', 320, 0.8, -1.5)]
   if (g === 'lofi' || p.instruments.vinyl) filters.push(() => new Biquad('lowpass', 7200, 0.6))
-  else filters.push(() => new Biquad('highshelf', 9000, 0.7, 1 + p.brightness * 1.5))
+  else {
+    filters.push(() => new Biquad('highshelf', 8000, 0.7, -3 + p.brightness * 2))
+  }
   eqStereo(bus.L, bus.R, filters)
   if (g === 'lofi') {
     for (let i = 0; i < bus.n; i++) {
@@ -59,26 +61,6 @@ export function processInstrumental(bus: Bus, plan: SongPlan): void {
 
 /** Vocal chain: EQ, compression, plate reverb, slap/echo delay. In place. */
 export function processVocals(bus: Bus, plan: SongPlan): void {
-  const fem = plan.gender === 'female'
-  // pre-normalise so the compressor threshold is meaningful
-  const r0 = rms(bus.L, bus.R)
-  if (r0 > 0) {
-    const k = 0.1 / r0
-    for (let i = 0; i < bus.n; i++) {
-      bus.L[i] *= k
-      bus.R[i] *= k
-      bus.rev[i] *= k
-      bus.dly[i] *= k
-    }
-  }
-  eqStereo(bus.L, bus.R, [
-    () => new Biquad('highpass', fem ? 140 : 95, 0.7),
-    () => new Biquad('peak', 350, 0.9, -2.5),
-    () => new Biquad('peak', fem ? 3200 : 2800, 0.9, 3),
-    () => new Biquad('highshelf', 9500, 0.7, 2),
-    () => new Biquad('lowpass', 15000, 0.7),
-  ])
-  compress(bus.L, bus.R, { threshDb: -16, ratio: 3, attackMs: 6, releaseMs: 90, kneeDb: 6, makeupDb: 3 })
   const g = plan.profile.genre
   const big = plan.profile.reverb
   applyReverb(bus.rev, bus.L, bus.R, { room: 0.66 + big * 0.28, damp: 0.38, wet: 0.95, predelayMs: 38, size: 0.95, hpHz: 300, lpHz: 9000 })

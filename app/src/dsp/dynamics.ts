@@ -2,7 +2,7 @@
 // de-esser and tape-style saturation. Gain computers run at a control rate and
 // gains are linearly interpolated per sample (fast, click-free).
 
-import { biquad, designBiquad } from './biquad'
+import { designBiquad } from './biquad'
 import { clamp, slidingMax } from './util'
 
 // ---------------------------------------------------------------- gate / expander
@@ -73,7 +73,7 @@ export function vocalGate(x: Float32Array, sr: number, p: GateParams): void {
   const N = p.noiseFloorDb
   const V = p.voiceDb
   const thrNoise = Math.min(Math.max(N + 6, V - 40), V - 18)
-  const thrBreath = Math.max(thrNoise + 3, V - 17)
+  const thrBreath = Math.max(thrNoise + 3, V - 14)
   const knee = 6
   const target = new Float32Array(nb)
   const expand = (L: number, thr: number, slope: number, range: number): number => {
@@ -90,7 +90,7 @@ export function vocalGate(x: Float32Array, sr: number, p: GateParams): void {
   for (let b = 0; b < nb; b++) {
     const L = lev[b]
     const gN = expand(L, thrNoise, 2, p.noiseRangeDb)
-    const gB = expand(L, thrBreath, 1, p.breathRangeDb)
+    const gB = expand(L, thrBreath, 2, p.breathRangeDb)
     target[b] = Math.max(-p.noiseRangeDb, gN + (1 - near[b]) * gB)
   }
   // look-ahead (open early) + hold (close late), then attack/release ballistics
@@ -127,6 +127,8 @@ export interface CompParams {
   /** RMS window (ms); 0 = peak detection */
   rmsMs?: number
   makeupDb?: number
+  /** parallel blend: out = x · (dry + blend · gain) — 'New York' compression without an extra buffer */
+  blend?: number
 }
 
 export function staticGainDb(L: number, T: number, R: number, knee: number): number {
@@ -154,6 +156,7 @@ export function compress(x: Float32Array, sr: number, p: CompParams, out: Float3
   const aAtt = Math.exp(-B / (Math.max(0.05, p.attackMs) * 0.001 * sr))
   const aRel = Math.exp(-B / (Math.max(1, p.releaseMs) * 0.001 * sr))
   const makeup = p.makeupDb ?? 0
+  const blend = p.blend
   let env = 0
   let st = 0
   let gPrev = Math.pow(10, makeup / 20)
@@ -170,7 +173,8 @@ export function compress(x: Float32Array, sr: number, p: CompParams, out: Float3
     st = gr < st ? gr + (st - gr) * aAtt : gr + (st - gr) * aRel
     const g = Math.pow(10, (st + makeup) / 20)
     const len = e - s0
-    for (let i = s0; i < e; i++) out[i] = x[i] * (gPrev + ((g - gPrev) * (i - s0 + 1)) / len)
+    if (blend === undefined) for (let i = s0; i < e; i++) out[i] = x[i] * (gPrev + ((g - gPrev) * (i - s0 + 1)) / len)
+    else for (let i = s0; i < e; i++) out[i] = x[i] * (1 + blend * (gPrev + ((g - gPrev) * (i - s0 + 1)) / len))
     gPrev = g
   }
   return out
@@ -192,8 +196,12 @@ export interface DeEssParams {
 export function deEss(x: Float32Array, sr: number, p: DeEssParams): void {
   if (p.maxReductionDb <= 0.01) return
   const n = x.length
-  const band = new Float32Array(x)
-  biquad(band, designBiquad('bandpass', Math.min(p.freq, sr * 0.42), sr, p.q ?? 0.8))
+  // the sibilance band is computed on the fly (streamed biquad), no full-length copy
+  const bp = designBiquad('bandpass', Math.min(p.freq, sr * 0.42), sr, p.q ?? 0.8)
+  const { b0, b1, b2, a1, a2 } = bp
+  let z1 = 0
+  let z2 = 0
+  const band = new Float32Array(16)
   const aE = 1 - Math.exp(-1 / (0.004 * sr))
   const B = 16
   const aAtt = Math.exp(-B / (0.0008 * sr))
@@ -206,8 +214,14 @@ export function deEss(x: Float32Array, sr: number, p: DeEssParams): void {
   for (let s0 = 0; s0 < n; s0 += B) {
     const e = Math.min(n, s0 + B)
     for (let i = s0; i < e; i++) {
-      eb += aE * (band[i] * band[i] - eb)
-      ef += aE * (x[i] * x[i] - ef)
+      const v = x[i]
+      const y = b0 * v + z1
+      z1 = b1 * v - a1 * y + z2
+      z2 = b2 * v - a2 * y
+      const bv = Math.fround(y)
+      band[i - s0] = bv
+      eb += aE * (bv * bv - eb)
+      ef += aE * (v * v - ef)
     }
     const bDb = 10 * Math.log10(eb + 1e-20)
     const fDb = 10 * Math.log10(ef + 1e-20)
@@ -218,7 +232,7 @@ export function deEss(x: Float32Array, sr: number, p: DeEssParams): void {
     const len = e - s0
     for (let i = s0; i < e; i++) {
       const gi = gPrev + ((g - gPrev) * (i - s0 + 1)) / len
-      x[i] += band[i] * (gi - 1)
+      x[i] += band[i - s0] * (gi - 1)
     }
     gPrev = g
   }

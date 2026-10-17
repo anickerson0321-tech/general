@@ -128,7 +128,9 @@ export function HomePage() {
           return (
             <div key={t as string} className="card">
               <div className="row" style={{ marginBottom: 6, color: 'var(--accent)' }}>
-                <Ic />
+                <span style={{ width: 20, height: 20, display: 'inline-flex', flex: 'none' }}>
+                  <Ic />
+                </span>
                 <b style={{ color: 'var(--text)' }}>{t as string}</b>
               </div>
               <div className="small muted">{d as string}</div>

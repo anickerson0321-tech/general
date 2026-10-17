@@ -25,7 +25,7 @@ function metallic(out: Float32Array, base: number, seed: number, decay: number, 
   const nz = new Noise(seed)
   const hp1 = new Biquad('highpass', hpHz, 0.7)
   const hp2 = new Biquad('highpass', hpHz, 0.7)
-  const pk = new Biquad('peak', 10000, 0.8, 4)
+  const pk = new Biquad('lowpass', 12000, 0.7)
   for (let i = 0; i < out.length; i++) {
     let s = 0
     for (let k = 0; k < 6; k++) {
@@ -41,7 +41,7 @@ function metallic(out: Float32Array, base: number, seed: number, decay: number, 
 function kick(kit: DrumKit, seed: number, v: number): Float32Array {
   const cfg = {
     acoustic: { f0: 105, f1: 52, pd: 0.035, dec: 0.3, click: 0.35, drive: 1.6, sec: 0.6 },
-    electronic: { f0: 170, f1: 50, pd: 0.03, dec: 0.38, click: 0.25, drive: 2.0, sec: 0.7 },
+    electronic: { f0: 170, f1: 50, pd: 0.03, dec: 0.3, click: 0.25, drive: 2.0, sec: 0.7 },
     '808': { f0: 120, f1: 44, pd: 0.03, dec: 0.55, click: 0.2, drive: 1.8, sec: 0.9 },
     lofi: { f0: 95, f1: 50, pd: 0.03, dec: 0.25, click: 0.15, drive: 1.4, sec: 0.5 },
     brush: { f0: 85, f1: 50, pd: 0.03, dec: 0.22, click: 0.05, drive: 1.1, sec: 0.45 },
@@ -224,8 +224,8 @@ const PAN: Record<DrumInst, number> = {
   shaker: 0.5, tamb: -0.5, snap: -0.1, taiko: 0, brush: 0.1,
 }
 const GAIN: Record<DrumInst, number> = {
-  k: 1, s: 0.7, clap: 0.55, rim: 0.4, ch: 0.28, oh: 0.25, hp: 0.25, crash: 0.32, ride: 0.3, th: 0.6, tm: 0.6, tl: 0.65,
-  shaker: 0.22, tamb: 0.22, snap: 0.5, taiko: 0.9, brush: 0.5,
+  k: 0.45, s: 0.8, clap: 0.85, rim: 0.55, ch: 0.45, oh: 0.36, hp: 0.35, crash: 0.4, ride: 0.42, th: 0.6, tm: 0.6, tl: 0.65,
+  shaker: 0.36, tamb: 0.34, snap: 0.7, taiko: 0.55, brush: 0.6,
 }
 const REV: Record<DrumInst, number> = {
   k: 0.02, s: 0.16, clap: 0.2, rim: 0.12, ch: 0.03, oh: 0.06, hp: 0.02, crash: 0.12, ride: 0.06, th: 0.18, tm: 0.18, tl: 0.18,

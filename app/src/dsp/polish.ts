@@ -13,7 +13,8 @@ import type { CleanTrack } from './track'
 import type { ResolvedChain } from './chain'
 import { analyzePitch } from './pitch'
 import { fft } from './fft'
-import { biquad, butterworth, dcBlock, designBiquad } from './biquad'
+import type { Biquad } from './biquad'
+import { butterworth, cascade, dcBlock, designBiquad } from './biquad'
 import { levelParams } from './chain'
 import { spectralDenoise } from './denoise'
 import { compress, deEss, tapeSaturate, vocalGate } from './dynamics'
@@ -128,7 +129,7 @@ function measureTilt(x: Float32Array, sr: number, ct: CleanTrack): number {
 /** 2:1 decimation with an 8th-order Butterworth anti-alias filter at ~0.22·sr. */
 function decimate2(x: Float32Array, sr: number): Float32Array {
   const tmp = new Float32Array(x)
-  for (const s of butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 8)) biquad(tmp, s)
+  cascade(tmp, butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 8))
   const m = Math.ceil(x.length / 2)
   const out = new Float32Array(m)
   for (let i = 0; i < m; i++) out[i] = tmp[2 * i]
@@ -144,7 +145,7 @@ function upsample2(x: Float32Array, n: number, sr: number): Float32Array {
     if (j >= m) break
     out[i] = i & 1 ? 0.5 * (x[j] + (j + 1 < m ? x[j + 1] : 0)) : x[j]
   }
-  for (const s of butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 4)) biquad(out, s)
+  cascade(out, butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 4))
   return out
 }
 
@@ -188,7 +189,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   // ---- 1. sanitize, DC, high-pass
   let x = sanitize(Float32Array.from(input.data))
   dcBlock(x, sr, 5)
-  for (const s of butterworth('highpass', ch.highpassHz, sr, 4)) biquad(x, s)
+  cascade(x, butterworth('highpass', ch.highpassHz, sr, 4))
 
   // ---- 2. pitch analysis (cached if provided)
   report(0.01, 'Analysing pitch')
@@ -242,19 +243,21 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   })
 
   // ---- 7. subtractive EQ + automatic tonal balance
-  if (ch.mudDb < -0.01) biquad(x, designBiquad('peak', ch.mudHz, sr, 1.0, ch.mudDb))
-  if (ch.harshDb < -0.01) biquad(x, designBiquad('peak', ch.harshHz, sr, 3.0, ch.harshDb))
+  const sub: Biquad[] = []
+  if (ch.mudDb < -0.01) sub.push(designBiquad('peak', ch.mudHz, sr, 1.0, ch.mudDb))
+  if (ch.harshDb < -0.01) sub.push(designBiquad('peak', ch.harshHz, sr, 3.0, ch.harshDb))
   if (ch.tonalMatch > 0.01 && !silent) {
     const tilt = measureTilt(x, sr, ct)
     if (tilt === tilt) {
       const TARGET_TILT = -4.5 // dB/oct, typical polished pop vocal (octave-band energy)
       const t = clamp((TARGET_TILT - tilt) * 2.5 * ch.tonalMatch, -3, 3)
       if (Math.abs(t) > 0.05) {
-        biquad(x, designBiquad('lowshelf', 280, sr, 0.7, -t))
-        biquad(x, designBiquad('highshelf', 2500, sr, 0.7, t))
+        sub.push(designBiquad('lowshelf', 280, sr, 0.7, -t))
+        sub.push(designBiquad('highshelf', 2500, sr, 0.7, t))
       }
     }
   }
+  cascade(x, sub)
   report(0.58, 'Compressing')
 
   // ---- 8. dynamics
@@ -269,8 +272,10 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   })
 
   // ---- 9. tone EQ, de-ess, colour
-  if (ch.presenceDb > 0.01) biquad(x, designBiquad('peak', ch.presenceHz, sr, 0.8, ch.presenceDb))
-  if (ch.airDb > 0.01) biquad(x, designBiquad('highshelf', Math.min(ch.airHz, sr * 0.4), sr, 0.7, ch.airDb))
+  const tone: Biquad[] = []
+  if (ch.presenceDb > 0.01) tone.push(designBiquad('peak', ch.presenceHz, sr, 0.8, ch.presenceDb))
+  if (ch.airDb > 0.01) tone.push(designBiquad('highshelf', Math.min(ch.airHz, sr * 0.4), sr, 0.7, ch.airDb))
+  cascade(x, tone)
   deEss(x, sr, { freq: ch.deEssHz, q: 0.8, maxReductionDb: ch.deEssDb, thresholdDb: REF_DB - 24, relDb: -9 })
   tapeSaturate(x, sr, ch.saturation)
   if (ch.parallelMix > 0.001) {
@@ -392,6 +397,15 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
     }
   } else {
     limitStereo(left, right, sr, { ceilingDb: ch.limiterCeilingDb })
+  }
+  // seamless start of the slider: cross-fade from the untouched take over amounts 0..3
+  if (amount < 3) {
+    const w = smoothstep(0, 3, amount)
+    const dry = rawCopy(input).left
+    for (let i = 0; i < n; i++) {
+      left[i] = dry[i] + w * (left[i] - dry[i])
+      right[i] = dry[i] + w * (right[i] - dry[i])
+    }
   }
   report(1, 'Done')
   return { sampleRate: sr, left, right }

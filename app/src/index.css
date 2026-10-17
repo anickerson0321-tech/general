@@ -906,6 +906,7 @@ input[type='range'].slider::-moz-range-thumb {
   z-index: -1;
 }
 .np .art {
+  flex: none;
   width: min(100%, 520px);
   aspect-ratio: 1;
   border-radius: 14px;
@@ -931,6 +932,9 @@ input[type='range'].slider::-moz-range-thumb {
   gap: 26px;
   align-items: start;
 }
+.create > * {
+  min-width: 0;
+}
 .create-form {
   position: sticky;
   top: 0;
@@ -951,6 +955,7 @@ input[type='range'].slider::-moz-range-thumb {
   font-size: 13px;
 }
 .model-btn {
+  white-space: nowrap;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1148,21 +1153,13 @@ input[type='range'].slider::-moz-range-thumb {
   opacity: 0.55;
 }
 .kara-word {
-  position: relative;
   display: inline-block;
   white-space: pre;
-}
-.kara-word .fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  overflow: hidden;
-  white-space: pre;
-  background: var(--grad);
+  background-image: linear-gradient(100deg, #ff4f8b, #ff7a59 55%, #ffb547), linear-gradient(rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.55));
+  background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  pointer-events: none;
 }
 .kara-section {
   font-size: 12px;
@@ -1456,8 +1453,15 @@ input[type='range'].slider::-moz-range-thumb {
     padding: 20px 20px calc(var(--player) + 20px);
     gap: 16px;
   }
+  .np {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
   .np .art {
-    width: min(70vw, 340px);
+    width: min(58vw, 280px);
+    flex: none;
+  }
+  .np .lyrics-scroll {
+    padding: 12vh 0;
   }
 }
 @media (max-width: 760px) {
@@ -1547,11 +1551,18 @@ input[type='range'].slider::-moz-range-thumb {
   .player .right .vol {
     display: none;
   }
+  .player {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
   .player .center {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: -1px;
+    position: static;
+  }
+  .player .hide-sm,
+  .player .now .icon-btn {
+    display: none;
+  }
+  .player .right {
+    gap: 0;
   }
   .player .mini-progress {
     display: block !important;

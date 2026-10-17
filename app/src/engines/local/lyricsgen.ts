@@ -2,7 +2,7 @@
 import { Rng, mixSeed } from './rng'
 import { countSyllables } from './syllables'
 
-type Pos = 'n' | 'a' | 'v' | 'x'
+type Pos = 'n' | 'a' | 'v' | 'x' | 'o'
 
 // rhyme families: word -> part of speech (n noun, a adjective, v verb (base), x adverb/other)
 const RHYMES: Array<Array<[string, Pos]>> = [
@@ -11,23 +11,22 @@ const RHYMES: Array<Array<[string, Pos]>> = [
   [['fire', 'n'], ['higher', 'x'], ['desire', 'n'], ['wire', 'n'], ['inspire', 'v'], ['choir', 'n'], ['retire', 'v'], ['entire', 'a'], ['liar', 'n']],
   [['go', 'v'], ['know', 'v'], ['glow', 'n'], ['slow', 'a'], ['show', 'v'], ['below', 'x'], ['let go', 'v'], ['grow', 'v'], ['snow', 'n'], ['radio', 'n'], ['shadow', 'n'], ['window', 'n'], ['long ago', 'x'], ['overflow', 'v']],
   [['alone', 'x'], ['home', 'n'], ['own', 'a'], ['stone', 'n'], ['phone', 'n'], ['bone', 'n'], ['known', 'a'], ['unknown', 'a'], ['zone', 'n'], ['throne', 'n'], ['grown', 'a']],
-  [['you', 'x'], ['true', 'a'], ['blue', 'a'], ['through', 'x'], ['new', 'a'], ['do', 'v'], ['view', 'n'], ['breakthrough', 'n'], ['come true', 'v'], ['shoes', 'n'], ['avenue', 'n'], ['brand new', 'a']],
+  [['you', 'o'], ['true', 'a'], ['blue', 'a'], ['through', 'x'], ['new', 'a'], ['do', 'v'], ['view', 'n'], ['breakthrough', 'n'], ['come true', 'v'], ['shoes', 'n'], ['avenue', 'n'], ['brand new', 'a']],
   [['rain', 'n'], ['pain', 'n'], ['again', 'x'], ['chain', 'n'], ['train', 'n'], ['lane', 'n'], ['remain', 'v'], ['explain', 'v'], ['insane', 'a'], ['flame', 'n'], ['name', 'n'], ['window pane', 'n'], ['hurricane', 'n']],
   [['heart', 'n'], ['apart', 'x'], ['start', 'v'], ['art', 'n'], ['dark', 'n'], ['spark', 'n'], ['mark', 'n'], ['restart', 'v'], ['falling apart', 'a'], ['work of art', 'n']],
   [['song', 'n'], ['along', 'x'], ['strong', 'a'], ['long', 'a'], ['belong', 'v'], ['wrong', 'a'], ['on and on', 'x'], ['all night long', 'x'], ['gone', 'a']],
-  [['free', 'a'], ['me', 'x'], ['see', 'v'], ['be', 'v'], ['sea', 'n'], ['believe', 'v'], ['dream', 'n'], ['breathe', 'v'], ['leave', 'v'], ['eternity', 'n'], ['melody', 'n'], ['memory', 'n'], ['symphony', 'n'], ['gravity', 'n']],
-  [['alive', 'a'], ['drive', 'v'], ['survive', 'v'], ['arrive', 'v'], ['dive', 'v'], ['thrive', 'v'], ['skyline', 'n'], ['high', 'a'], ['sky', 'n'], ['fly', 'v'], ['try', 'v'], ['cry', 'v'], ['goodbye', 'n'], ['why', 'x'], ['lullaby', 'n']],
-  [['mind', 'n'], ['find', 'v'], ['behind', 'x'], ['kind', 'a'], ['blind', 'a'], ['time', 'n'], ['shine', 'v'], ['line', 'n'], ['sign', 'n'], ['fine', 'a'], ['divine', 'a'], ['mine', 'x'], ['design', 'n'], ['rewind', 'v']],
-  [['fall', 'v'], ['call', 'v'], ['all', 'x'], ['wall', 'n'], ['small', 'a'], ['tall', 'a'], ['ball', 'n'], ['crawl', 'v'], ['hall', 'n'], ['waterfall', 'n']],
+  [['free', 'a'], ['me', 'o'], ['see', 'v'], ['be', 'v'], ['sea', 'n'], ['believe', 'v'], ['dream', 'n'], ['breathe', 'v'], ['leave', 'v'], ['eternity', 'n'], ['melody', 'n'], ['memory', 'n'], ['symphony', 'n'], ['gravity', 'n']],
+  [['alive', 'a'], ['drive', 'v'], ['survive', 'v'], ['arrive', 'v'], ['dive', 'v'], ['thrive', 'v'], ['skyline', 'n'], ['high', 'a'], ['sky', 'n'], ['fly', 'v'], ['try', 'v'], ['cry', 'v'], ['goodbye', 'n'], ['tonight', 'x'], ['lullaby', 'n']],
+  [['mind', 'n'], ['find', 'v'], ['behind', 'x'], ['kind', 'a'], ['blind', 'a'], ['time', 'n'], ['shine', 'v'], ['line', 'n'], ['sign', 'n'], ['fine', 'a'], ['divine', 'a'], ['design', 'n'], ['rewind', 'v']],
+  [['fall', 'v'], ['call', 'v'], ['after all', 'x'], ['wall', 'n'], ['small', 'a'], ['tall', 'a'], ['ball', 'n'], ['crawl', 'v'], ['hall', 'n'], ['waterfall', 'n']],
   [['here', 'x'], ['near', 'x'], ['clear', 'a'], ['fear', 'n'], ['year', 'n'], ['tear', 'n'], ['disappear', 'v'], ['appear', 'v'], ['atmosphere', 'n'], ['frontier', 'n'], ['sincere', 'a']],
-  [['sound', 'n'], ['ground', 'n'], ['around', 'x'], ['found', 'a'], ['down', 'x'], ['town', 'n'], ['crown', 'n'], ['drown', 'v'], ['underground', 'x'], ['profound', 'a']],
+  [['sound', 'n'], ['ground', 'n'], ['around', 'x'], ['found', 'a'], ['down', 'x'], ['around', 'x'], ['town', 'n'], ['crown', 'n'], ['drown', 'v'], ['underground', 'x'], ['profound', 'a']],
   [['place', 'n'], ['face', 'n'], ['space', 'n'], ['chase', 'v'], ['race', 'n'], ['grace', 'n'], ['embrace', 'v'], ['trace', 'n'], ['erase', 'v']],
   [['forever', 'x'], ['never', 'x'], ['together', 'x'], ['whatever', 'x'], ['ever', 'x'], ['better', 'a'], ['weather', 'n'], ['feather', 'n']],
   [['moon', 'n'], ['soon', 'x'], ['tune', 'n'], ['june', 'n'], ['balloon', 'n'], ['room', 'n'], ['bloom', 'v'], ['afternoon', 'n'], ['cocoon', 'n']],
   [['gold', 'n'], ['cold', 'a'], ['hold', 'v'], ['old', 'a'], ['told', 'v'], ['bold', 'a'], ['soul', 'n'], ['control', 'n'], ['whole', 'a'], ['unfold', 'v'], ['roll', 'v']],
-  [['sun', 'n'], ['run', 'v'], ['one', 'n'], ['done', 'a'], ['fun', 'n'], ['young', 'a'], ['begun', 'a'], ['someone', 'n'], ['undone', 'a'], ['everyone', 'n']],
+  [['sun', 'n'], ['run', 'v'], ['the one', 'n'], ['done', 'a'], ['fun', 'n'], ['young', 'a'], ['begun', 'a'], ['someone', 'n'], ['undone', 'a'], ['everyone', 'n']],
   [['ocean', 'n'], ['motion', 'n'], ['emotion', 'n'], ['devotion', 'n'], ['potion', 'n'], ['slow motion', 'n']],
-  [['dreams', 'n'], ['seams', 'n'], ['streams', 'n'], ['it seems', 'x'], ['screams', 'n'], ['beams', 'n'], ['extremes', 'n']],
 ]
 
 interface Theme {
@@ -120,7 +119,8 @@ const STOP = new Set(
     'some something someone very really just like want need please feel feeling style vibe vibes type kind sort ' +
     'pop rock trap rap hip hop edm house jazz country folk ballad metal punk reggae gospel kpop k-pop lofi lo-fi soul rnb r&b ' +
     'synthwave cinematic orchestral acoustic electronic upbeat sad happy dark dreamy chill epic slow fast female male vocals voice ' +
-    'bpm beat beats instrumental verse chorus bridge who what when where how why which into over under through').split(/\s+/),
+    'bpm beat beats instrumental verse chorus bridge who what when where how why which into over under through ' +
+    'after before during until while since without within around across along behind beyond near far much many more most other another every each long').split(/\s+/),
 )
 
 function title(s: string): string {
@@ -195,16 +195,20 @@ const PRE: Array<[string, Pos]> = [
   ['Every {N} is {R}', 'a'],
 ]
 
-const CHORUS_HOOK: string[] = [
-  'Oh, {T}, {R}',
-  '{T}, {T}, {R}',
-  "We're {G} on the {T} {R}",
-  'Take me to the {T} {R}',
-  '{T}, you and me {R}',
-  'Oh, oh, {T} {R}',
+const CHORUS_HOOK: Array<[string, Pos]> = [
+  ['Oh, {T}, take me {R}', 'x'],
+  ['{T}, you are my {R}', 'n'],
+  ['{T}, {T}, never let me {R}', 'v'],
+  ["We're {G} in the {T} {R}", 'x'],
+  ['Take me to the {T}, take me {R}', 'x'],
+  ['Oh, {T}, I feel {R}', 'a'],
+  ["{T}, I'm coming back to {R}", 'o'],
+  ['Hold on, {T}, hold on to {R}', 'o'],
 ]
 const CHORUS: Array<[string, Pos]> = [
   ['So come on, {V} with me {R}', 'x'],
+  ["I'll be right here waiting for {R}", 'o'],
+  ['Nothing in the world compares to {R}', 'o'],
   ['Turn it up and let the {N} {R}', 'v'],
   ['And I feel {A}, I feel {R}', 'a'],
   ['Hold me like the {R}', 'n'],
@@ -216,6 +220,7 @@ const CHORUS: Array<[string, Pos]> = [
   ['Hands up, hearts {R}', 'x'],
   ['Like a {A} {R}', 'n'],
   ['All we need is the {R}', 'n'],
+  ["Don't you ever let it {R}", 'v'],
 ]
 
 const BRIDGE: Array<[string, Pos]> = [
@@ -252,9 +257,16 @@ function extractTopics(prompt: string): string[] {
     .replace(/[^a-z' -]/g, ' ')
     .split(/[\s-]+/)
     .map((w) => w.replace(/^'+|'+$/g, ''))
-    .filter((w) => w.length >= 3 && !STOP.has(w))
+  const ok = (w: string) => w.length >= 3 && !STOP.has(w)
   const out: string[] = []
-  for (const w of words) if (!out.includes(w)) out.push(w)
+  // a compound of two adjacent content words ("road trip", "neon city") makes the best hook topic
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (ok(words[i]) && ok(words[i + 1]) && !/(ing|ly)$/.test(words[i + 1])) {
+      out.push(`${words[i]} ${words[i + 1]}`)
+      break
+    }
+  }
+  for (const w of words) if (ok(w) && !out.includes(w)) out.push(w)
   return out.slice(0, 4)
 }
 
@@ -286,7 +298,7 @@ function makeLine(c: Ctx, tpls: Array<[string, Pos]>, f: Family, minS = 5, maxS 
     const cands = f.words.filter(([w, p]) => p === pos && !f.used.has(w))
     if (!cands.length) continue
     const w = c.r.pick(cands)[0]
-    const line = cap(fill(tpl, c, w))
+    const line = tidy(fill(tpl, c, w))
     const n = countSyllables(line)
     if (n >= minS && n <= maxS) {
       f.used.add(w)
@@ -300,19 +312,23 @@ function makeLine(c: Ctx, tpls: Array<[string, Pos]>, f: Family, minS = 5, maxS 
 }
 
 function makeHook(c: Ctx, f: Family): string {
-  for (let tries = 0; tries < 24; tries++) {
-    const tpl = c.r.pick(CHORUS_HOOK)
-    const w = rhymeWord(f, 'x', c.r) ?? rhymeWord(f, 'a', c.r)
-    if (!w) {
-      f.used.clear()
-      continue
-    }
-    const line = cap(fill(tpl, c, w))
+  for (let tries = 0; tries < 40; tries++) {
+    const [tpl, pos] = c.r.pick(CHORUS_HOOK)
+    const w = rhymeWord(f, pos, c.r)
+    if (!w) continue
+    const line = tidy(fill(tpl, c, w))
     const n = countSyllables(line)
-    if (n >= 4 && n <= 10) return line
+    if (n >= 4 && n <= 11) return line
     f.used.delete(w)
   }
-  return cap(`Oh, ${c.topic}, tonight`)
+  return tidy(`Oh, ${c.topic}, take me tonight`)
+}
+
+/** articles, duplicate words, capitalisation */
+function tidy(line: string): string {
+  let l = line.replace(/\b([Aa]) ([aeiou])/g, '$1n $2').replace(/\b(\w+) \1\b/gi, (m, w) => (/^(oh|summer|night|love|\w+)$/i.test(w) && /,/.test(m) ? m : w))
+  l = l.replace(/\s+,/g, ',').replace(/\s{2,}/g, ' ').trim()
+  return cap(l)
 }
 
 /**
@@ -367,10 +383,12 @@ export function generateLocalLyrics(prompt: string, seed: number, opts?: { genre
   parts.push(`[Bridge]\n${bridge.join('\n')}`)
   parts.push(`[Chorus]\n${chorusLines.join('\n')}`)
   parts.push(`[Outro]\n${outro}`)
-  // title: the hook's key phrase
-  const hookWords = hook.replace(/[^A-Za-z' ]/g, ' ').split(/\s+/).filter((w) => w && !/^(oh|we're|on|the|take|me|to|you|and)$/i.test(w))
-  let ttl = topic
-  if (hookWords.length >= 2 && r.chance(0.6)) ttl = hookWords.slice(-2).join(' ')
+  // title: topic + the hook's rhyme word when it makes a nice phrase, else adjective + topic
+  const lastWord = hook.replace(/[^A-Za-z' ]/g, ' ').trim().split(/\s+/).pop() ?? ''
+  const nice = ['tonight', 'forever', 'again', 'away', 'alive', 'together', 'higher', 'free', 'home', 'fire', 'light', 'heart', 'gold', 'dreams', 'ocean', 'skyline', 'satellite', 'melody', 'gravity', 'song', 'sun', 'moon', 'young', 'wild', 'runaway']
+  let ttl: string
+  if (nice.includes(lastWord.toLowerCase()) && r.chance(0.7)) ttl = `${topic} ${lastWord}`
   else if (r.chance(0.5)) ttl = `${r.pick(th.a)} ${topic}`
+  else ttl = topic
   return { title: title(ttl.trim()), lyrics: parts.join('\n\n') }
 }

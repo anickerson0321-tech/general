@@ -14,9 +14,10 @@ export interface DenoiseResult {
   noiseDb: number
 }
 
+/** Denoises `x` IN PLACE (returned as `out`). */
 export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): DenoiseResult {
   const n = x.length
-  if (depthDb <= 0.05 || n < 4096) return { out: new Float32Array(x), depthDb: 0, noiseDb: -120 }
+  if (depthDb <= 0.05 || n < 4096) return { out: x, depthDb: 0, noiseDb: -120 }
   const N = sr > 64000 ? 2048 : sr > 32000 ? 1024 : 512
   const H = N >> 1
   const K = (N >> 1) + 1
@@ -38,13 +39,13 @@ export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): D
   }
   const valid: number[] = []
   for (let f = 0; f < nFrames; f++) if (fe[f] > -110) valid.push(fe[f])
-  if (valid.length < 8) return { out: new Float32Array(x), depthDb: 0, noiseDb: -120 }
+  if (valid.length < 8) return { out: x, depthDb: 0, noiseDb: -120 }
   const qDb = percentile(valid, 0.12)
   const loudDb = percentile(valid, 0.9)
   // no clear noise floor (sung throughout / music bleed): back off
   const confidence = Math.max(0, Math.min(1, (loudDb - qDb - 12) / 15))
   const depth = depthDb * confidence
-  if (depth <= 0.1) return { out: new Float32Array(x), depthDb: 0, noiseDb: qDb }
+  if (depth <= 0.1) return { out: x, depthDb: 0, noiseDb: qDb }
 
   const re = new Float64Array(N)
   const im = new Float64Array(N)
@@ -81,7 +82,7 @@ export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): D
     }
     cnt += fb >= 0 ? 2 : 1
   }
-  if (cnt === 0) return { out: new Float32Array(x), depthDb: 0, noiseDb: qDb }
+  if (cnt === 0) return { out: x, depthDb: 0, noiseDb: qDb }
   const lam = new Float64Array(K)
   for (let k = 0; k < K; k++) {
     let s = 0
@@ -103,7 +104,8 @@ export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): D
   const Xi = new Float64Array(K)
   const Yr = [new Float64Array(K), new Float64Array(K)]
   const Yi = [new Float64Array(K), new Float64Array(K)]
-  const out = new Float32Array(n)
+  // overlap-add carry: covers [base, base + 3H); finalised samples are written back into x
+  const acc = new Float64Array(3 * H)
   const Br = new Float64Array(K)
   const Bi = new Float64Array(K)
   const gainsFor = (slot: number): void => {
@@ -170,17 +172,19 @@ export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): D
       }
     }
     fft(re, im, true)
-    const sa = frameStart(f)
-    const sb = frameStart(fb)
+    const base = frameStart(f)
     const inv = 1 / N
     for (let i = 0; i < N; i++) {
-      const ia = sa + i
-      if (ia >= 0 && ia < n) out[ia] += re[i] * inv * win[i]
-      if (fb >= 0) {
-        const ib = sb + i
-        if (ib >= 0 && ib < n) out[ib] += im[i] * inv * win[i]
-      }
+      acc[i] += re[i] * inv * win[i]
+      if (fb >= 0) acc[H + i] += im[i] * inv * win[i]
     }
+    // [base, base + 2H) is complete and no longer read by later frames → write back in place
+    for (let j = 0; j < 2 * H; j++) {
+      const idx = base + j
+      if (idx >= 0 && idx < n) x[idx] = acc[j]
+    }
+    acc.copyWithin(0, 2 * H, 3 * H)
+    acc.fill(0, H)
   }
-  return { out, depthDb: depth, noiseDb: qDb }
+  return { out: x, depthDb: depth, noiseDb: qDb }
 }

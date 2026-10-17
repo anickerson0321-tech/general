@@ -226,7 +226,7 @@ function TakeEditor({ song, take }: { song: Song; take: Take }) {
   }
 
   const level = describeLevel(amount)
-  const params = levelParams(amount) as unknown as Record<string, unknown>
+  const params = levelParams(amount)
   const peaks = useMemo(() => (processed && !hearRaw ? waveformPeaks([processed.left, processed.right], 400) : raw ? waveformPeaks([raw.data], 400) : null), [processed, raw, hearRaw])
   const takeProgress = raw ? Math.max(0, Math.min(1, (t - offset) / (raw.data.length / raw.sampleRate))) : 0
 
@@ -330,15 +330,15 @@ function TakeEditor({ song, take }: { song: Song; take: Take }) {
               <div style={{ width: `${(after ?? 0) * 100}%` }} />
             </div>
           </div>
-          {Object.entries(params)
-            .filter(([, v]) => typeof v === 'number')
-            .slice(0, 6)
-            .map(([k, v]) => (
-              <div className="stat" key={k}>
-                <div className="k">{prettyKey(k)}</div>
-                <div className="v">{fmtParam(k, v as number)}</div>
+          {params.summary.map((it) => (
+            <div className="stat" key={it.id}>
+              <div className="k">{it.label}</div>
+              <div className="v">{Math.round(it.percent)}%</div>
+              <div className="meter">
+                <div style={{ width: `${it.percent}%` }} />
               </div>
-            ))}
+            </div>
+          ))}
         </div>
         <div className="tiny dim" style={{ marginTop: 8 }}>
           Tuning target: {song.melody?.length ? 'the song’s melody' : guide ? 'the AI singer’s melody' : song.key ? 'the song’s key' : 'nearest note'}
@@ -439,20 +439,3 @@ function TakeEditor({ song, take }: { song: Song; take: Take }) {
   )
 }
 
-function prettyKey(k: string) {
-  return k
-    .replace(/([A-Z])/g, ' $1')
-    .replace(/_/g, ' ')
-    .replace(/^./, (c) => c.toUpperCase())
-    .replace(/ Ms$/, ' (ms)')
-    .replace(/ Db$/, ' (dB)')
-}
-
-function fmtParam(k: string, v: number) {
-  const lk = k.toLowerCase()
-  if (lk.endsWith('ms')) return `${Math.round(v)} ms`
-  if (lk.endsWith('db')) return `${v.toFixed(1)} dB`
-  if (lk.endsWith('hz')) return `${Math.round(v)} Hz`
-  if (v >= 0 && v <= 1) return `${Math.round(v * 100)}%`
-  return v.toFixed(Math.abs(v) < 10 ? 1 : 0)
-}

@@ -118,8 +118,10 @@ export function noteCenterCurve(midi: Float32Array, run: Run, hopSec: number): F
   const med = new Float32Array(len)
   for (let i = 0; i < len; i++) {
     win.length = 0
-    const lo = Math.max(0, i - half)
-    const hi = Math.min(len - 1, i + half)
+    // symmetric window that shrinks at run edges so onsets/releases (scoops, falls) survive
+    const hw = Math.min(half, i, len - 1 - i)
+    const lo = i - hw
+    const hi = i + hw
     for (let j = lo; j <= hi; j++) win.push(midi[run.a + j])
     win.sort((x, y) => x - y)
     const m = win.length
@@ -129,7 +131,8 @@ export function noteCenterCurve(midi: Float32Array, run: Run, hopSec: number): F
   for (let i = 0; i < len; i++) {
     let s = 0
     let c = 0
-    for (let j = Math.max(0, i - sh); j <= Math.min(len - 1, i + sh); j++) {
+    const hs = Math.min(sh, i, len - 1 - i)
+    for (let j = i - hs; j <= i + hs; j++) {
       s += med[j]
       c++
     }
@@ -170,7 +173,7 @@ export function segmentRun(center: Float32Array, run: Run, hopSec: number, opts:
       const i0 = Math.max(0, i - 2)
       const i1 = Math.min(len - 1, i + 2)
       const slope = (center[i1] - center[i0]) / (Math.max(1, i1 - i0) * hopSec)
-      gl[i] = Math.abs(slope) > 12 ? 1 : 0
+      gl[i] = Math.abs(slope) > 8 ? 1 : 0
     }
     let i = 0
     while (i < len) {

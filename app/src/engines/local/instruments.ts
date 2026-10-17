@@ -7,6 +7,30 @@ export const scrA = new Float32Array(MAX_NOTE)
 export const scrB = new Float32Array(MAX_NOTE)
 const scrC = new Float32Array(MAX_NOTE)
 
+// ------------------------------------------------------------ note cache
+// Repeated notes/chords (very common in loops) are rendered once and reused.
+const noteCache = new Map<string, Float32Array>()
+let cacheBytes = 0
+const CACHE_LIMIT = 96 * 1024 * 1024
+function cacheGet(key: string): Float32Array | undefined {
+  return noteCache.get(key)
+}
+function cachePut(key: string, src: Float32Array, len: number): Float32Array {
+  if (cacheBytes + len * 4 > CACHE_LIMIT) {
+    noteCache.clear()
+    cacheBytes = 0
+  }
+  const c = src.slice(0, len)
+  noteCache.set(key, c)
+  cacheBytes += len * 4
+  return c
+}
+export function clearNoteCache(): void {
+  noteCache.clear()
+  cacheBytes = 0
+}
+const q = (x: number, k: number) => Math.round(x * k) / k
+
 export function softclip(x: number): number {
   if (x > 3) return 1
   if (x < -3) return -1
@@ -98,7 +122,14 @@ export interface BassNote {
   glideFrom?: number
 }
 
-export function renderBass(bus: Bus, kind: BassKind, n: BassNote, gain: number, duck: boolean, noiseSeed: number, bright: number): void {
+export function renderBass(bus: Bus, kind: BassKind, nIn: BassNote, gain: number, duck: boolean, noiseSeed: number, bright: number): void {
+  const n: BassNote = { ...nIn, dur: q(nIn.dur, 100), vel: q(nIn.vel, 8) }
+  const key = `b|${kind}|${n.midi}|${n.dur}|${n.vel}|${n.glideFrom ?? ''}|${q(bright, 4)}|${noiseSeed % 3}`
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.add(hit, hit.length, sec2s(n.t), gain, 0, 0, 0, duck, 'bass')
+    return
+  }
   const f = midiToHz(n.midi)
   const rel = kind === '808' ? 0.06 : kind === 'picked' || kind === 'upright' ? 0.05 : 0.03
   const len = Math.min(MAX_NOTE, Math.ceil((n.dur + rel) * SR))
@@ -167,7 +198,8 @@ export function renderBass(bus: Bus, kind: BassKind, n: BassNote, gain: number, 
       buf[i] = softclip(lp.lp(buf[i] * 1.2) + sinT(ph) * 0.55 * env) * 0.85
     }
   }
-  bus.add(buf, len, sec2s(n.t), gain, 0, 0, 0, duck, 'bass')
+  const out = cachePut(key, buf, len)
+  bus.add(out, len, sec2s(n.t), gain, 0, 0, 0, duck, 'bass')
 }
 
 /**
@@ -234,14 +266,21 @@ export interface KeyNote {
   vel: number
 }
 
-export function renderPiano(bus: Bus, n: KeyNote, gain: number, pan: number, rev: number, bright: number, tag = 'piano'): void {
+export function renderPiano(bus: Bus, nIn: KeyNote, gain: number, pan: number, rev: number, bright: number, tag = 'piano'): void {
+  const n: KeyNote = { ...nIn, dur: q(nIn.dur, 50), vel: q(nIn.vel, 6) }
+  const key = `pi|${n.midi}|${n.dur}|${n.vel}|${q(bright, 3)}`
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.add(hit, hit.length, sec2s(n.t), gain * nIn.vel * 0.5, pan, rev, 0, false, tag)
+    return
+  }
   const f = midiToHz(n.midi)
   const Tbase = Math.max(0.7, Math.min(7, 4.2 * Math.pow(261 / f, 0.55)))
   const durTot = Math.min(n.dur + 0.18, Tbase * 2.2)
   const len = Math.min(MAX_NOTE, Math.ceil(durTot * SR))
   const buf = scrA
   clear(buf, len)
-  const P = Math.max(2, Math.min(12, Math.floor(9500 / f)))
+  const P = Math.max(2, Math.min(10, Math.floor(7500 / f)))
   const B = 0.00012 * (1 + f / 400)
   const bri = 1.75 - 0.75 * n.vel - bright * 0.35
   const relStart = n.dur * SR
@@ -282,10 +321,18 @@ export function renderPiano(bus: Bus, n: KeyNote, gain: number, pan: number, rev
   for (let i = 0; i < hl; i++) buf[i] += lp.lp(nz.next()) * 0.25 * n.vel * (1 - i / hl)
   // attack smoothing
   for (let i = 0; i < Math.min(len, 40); i++) buf[i] *= i / 40
-  bus.add(buf, len, sec2s(n.t), gain * n.vel * 0.5, pan, rev, 0, false, tag)
+  const out = cachePut(key, buf, len)
+  bus.add(out, len, sec2s(n.t), gain * nIn.vel * 0.5, pan, rev, 0, false, tag)
 }
 
-export function renderEPiano(bus: Bus, n: KeyNote, gain: number, pan: number, rev: number, wobble: number, tag = 'epiano'): void {
+export function renderEPiano(bus: Bus, nIn: KeyNote, gain: number, pan: number, rev: number, wobble: number, tag = 'epiano'): void {
+  const n: KeyNote = { ...nIn, dur: q(nIn.dur, 50), vel: q(nIn.vel, 6) }
+  const key = `ep|${n.midi}|${n.dur}|${n.vel}|${wobble}`
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.addAutoPan(hit, hit.length, sec2s(n.t), gain * nIn.vel * 0.42, 4.2, 0.35 * (pan === 0 ? 1 : 0.5), rev, 0, tag)
+    return
+  }
   const f = midiToHz(n.midi)
   const tau = Math.max(0.6, Math.min(3.5, 2.2 * Math.pow(261 / f, 0.4)))
   const len = Math.min(MAX_NOTE, Math.ceil(Math.min(n.dur + 0.25, tau * 3) * SR))
@@ -310,7 +357,8 @@ export function renderEPiano(bus: Bus, n: KeyNote, gain: number, pan: number, re
     const s = sinT(pc + (I * sinT(pm)) / TWO_PI) + 0.12 * n.vel * sinT(pt) * Math.exp(-t / 0.03)
     buf[i] = s * env * rel
   }
-  bus.addAutoPan(buf, len, sec2s(n.t), gain * n.vel * 0.42, 4.2, 0.35 * (pan === 0 ? 1 : 0.5), rev, 0, tag)
+  const out = cachePut(key, buf, len)
+  bus.addAutoPan(out, len, sec2s(n.t), gain * nIn.vel * 0.42, 4.2, 0.35 * (pan === 0 ? 1 : 0.5), rev, 0, tag)
 }
 
 export function renderOrgan(bus: Bus, notes: KeyNote[], gain: number, pan: number, rev: number, perc: boolean, tag = 'organ'): void {
@@ -361,7 +409,17 @@ export interface PadChord {
 }
 
 /** render a sustained chord with per-note stereo oscillators */
-export function renderPad(bus: Bus, kind: PadKind, ch: PadChord, gain: number, rev: number, bright: number, duck: boolean, seed: number, opts?: { attack?: number; release?: number; staccato?: boolean }): void {
+export function renderPad(bus: Bus, kind: PadKind, chIn: PadChord, gain: number, rev: number, bright: number, duck: boolean, seed: number, opts?: { attack?: number; release?: number; staccato?: boolean }): void {
+  const ch: PadChord = { ...chIn, dur: q(chIn.dur, 20), vel: q(chIn.vel, 5) }
+  const key = `pad|${kind}|${ch.notes.join(',')}|${ch.dur}|${ch.vel}|${q(bright, 3)}|${opts?.attack ?? ''}|${opts?.release ?? ''}|${opts?.staccato ? 1 : 0}`
+  const hit = cacheGet(key)
+  if (hit) {
+    const half = hit.length >> 1
+    const g = (gain * ch.vel) / Math.sqrt(ch.notes.length)
+    bus.add(hit, half, sec2s(ch.t), g, -0.75, rev, 0, duck, kind)
+    bus.add(hit.subarray(half), half, sec2s(ch.t), g, 0.75, rev, 0, duck, kind)
+    return
+  }
   const att = opts?.attack ?? (kind === 'brass' ? 0.06 : kind === 'supersaw' ? 0.02 : kind === 'strings' ? 0.35 : 0.4)
   const rel = opts?.release ?? (kind === 'brass' ? 0.15 : kind === 'supersaw' ? 0.25 : 0.6)
   const len = Math.min(MAX_NOTE, Math.ceil((ch.dur + rel) * SR))
@@ -375,7 +433,7 @@ export function renderPad(bus: Bus, kind: PadKind, ch: PadChord, gain: number, r
   const nz = new Noise(seed)
   for (let ni = 0; ni < ch.notes.length; ni++) {
     const f = midiToHz(ch.notes[ni])
-    const nOsc = kind === 'supersaw' ? 6 : kind === 'strings' ? 4 : kind === 'brass' ? 2 : 2
+    const nOsc: number = kind === "supersaw" ? 6 : kind === "strings" ? 4 : 2
     const detune = kind === 'supersaw' ? 0.012 : kind === 'strings' ? 0.006 : kind === 'brass' ? 0.003 : 0.004
     const ph = new Float64Array(nOsc)
     const dts = new Float64Array(nOsc)
@@ -450,6 +508,13 @@ export function renderPad(bus: Bus, kind: PadKind, ch: PadChord, gain: number, r
   const g = (gain * ch.vel) / Math.sqrt(ch.notes.length)
   bus.add(L, len, sec2s(ch.t), g, -0.75, rev, 0, duck, kind)
   bus.add(R, len, sec2s(ch.t), g, 0.75, rev, 0, duck, kind)
+  if (cacheBytes + len * 8 <= CACHE_LIMIT) {
+    const both = new Float32Array(len * 2)
+    both.set(L.subarray(0, len), 0)
+    both.set(R.subarray(0, len), len)
+    noteCache.set(key, both)
+    cacheBytes += len * 8
+  }
 }
 
 // ============================================================ guitars
@@ -464,7 +529,16 @@ export interface Strum {
   mute?: boolean // palm mute / staccato
 }
 
-export function renderStrum(bus: Bus, kind: GuitarKind, s: Strum, gain: number, pan: number, rev: number, seed: number, dly = 0): void {
+export function renderStrum(bus: Bus, kind: GuitarKind, sIn: Strum, gain: number, pan: number, rev: number, seed: number, dly = 0): void {
+  const s: Strum = { ...sIn, dur: q(sIn.dur, 50), vel: q(sIn.vel, 6) }
+  const variant = (seed >>> 0) % 3
+  const key = `g|${kind}|${s.notes.join(',')}|${s.dur}|${s.vel}|${s.dir}|${s.mute ? 1 : 0}|${variant}`
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.add(hit, hit.length, sec2s(s.t), gain, pan, rev, dly, false, kind === 'distorted' ? 'gtr-dist' : 'gtr')
+    return
+  }
+  seed = variant * 7919 + 17
   const dist = kind === 'distorted'
   const rel = s.mute ? 0.04 : 0.12
   const len = Math.min(MAX_NOTE, Math.ceil((s.dur + rel + 0.05) * SR))
@@ -503,7 +577,8 @@ export function renderStrum(bus: Bus, kind: GuitarKind, s: Strum, gain: number, 
     const lp = new Biquad('lowpass', kind === 'nylon' ? 4500 : kind === 'clean' ? 6000 : 9000, 0.7)
     for (let i = 0; i < len; i++) buf[i] = lp.process(pres.process(body.process(hp.process(buf[i])))) * 0.6
   }
-  bus.add(buf, len, sec2s(s.t), gain, pan, rev, dly, false, dist ? 'gtr-dist' : 'gtr')
+  const out = cachePut(key, buf, len)
+  bus.add(out, len, sec2s(s.t), gain, pan, rev, dly, false, dist ? 'gtr-dist' : 'gtr')
 }
 
 // ============================================================ leads (monophonic lines)
@@ -632,7 +707,15 @@ export function renderLeadPhrase(bus: Bus, kind: LeadKind, notes: LeadNote[], ga
   bus.add(buf, len, sec2s(t0), gain, pan, rev, dly, false, 'lead')
 }
 
-export function renderPluck(bus: Bus, kind: 'pluck' | 'bell' | 'arp', n: LeadNote, gain: number, pan: number, rev: number, dly: number, bright: number): void {
+export function renderPluck(bus: Bus, kind: 'pluck' | 'bell' | 'arp', nIn: LeadNote, gain: number, pan: number, rev: number, dly: number, bright: number): void {
+  const n: LeadNote = { ...nIn, dur: q(nIn.dur, 50), vel: q(nIn.vel, 6) }
+  const key = `pl|${kind}|${n.midi}|${n.dur}|${n.vel}|${q(bright, 3)}`
+  const tag = kind === 'arp' ? 'arp' : 'lead'
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.add(hit, hit.length, sec2s(n.t), gain * nIn.vel, pan, rev, dly, false, tag)
+    return
+  }
   const f = midiToHz(n.midi)
   const decay = kind === 'bell' ? 1.4 : kind === 'arp' ? 0.22 : 0.45
   const len = Math.min(MAX_NOTE, Math.ceil(Math.min(n.dur + decay * 2, decay * 5) * SR))
@@ -671,7 +754,8 @@ export function renderPluck(bus: Bus, kind: 'pluck' | 'bell' | 'arp', n: LeadNot
       buf[i] = svf.process(s * 0.35) * env
     }
   }
-  bus.add(buf, len, sec2s(n.t), gain * n.vel, pan, rev, dly, false, kind === 'arp' ? 'arp' : 'lead')
+  const out = cachePut(key, buf, len)
+  bus.add(out, len, sec2s(n.t), gain * nIn.vel, pan, rev, dly, false, tag)
 }
 
 // ============================================================ fx

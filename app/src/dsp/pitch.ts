@@ -4,7 +4,7 @@
 
 import type { MonoBuffer, ProgressFn } from '../types'
 import { fft } from './fft'
-import { biquad, butterworth, designBiquad } from './biquad'
+import { STREAM_BLOCK, butterworth, cascadeState, cascadeStream, designBiquad } from './biquad'
 import { nextPow2, percentile } from './util'
 
 export interface PitchTrack {
@@ -48,18 +48,23 @@ export function analyzePitch(input: MonoBuffer, onProgress?: ProgressFn, opts: A
   const hop = Math.max(1, Math.round((opts.hopSec ?? 0.008) * sra))
   const hopSec = hop / sra
 
-  // ---- pre-processing: high-pass, anti-alias, decimate
+  // ---- pre-processing: high-pass, anti-alias, decimate (block-streamed, no full-length temp)
   const src = input.data
-  const tmp = new Float32Array(src.length)
-  for (let i = 0; i < src.length; i++) {
-    const v = src[i]
-    tmp[i] = v === v && v !== Infinity && v !== -Infinity ? v : 0
-  }
-  biquad(tmp, designBiquad('highpass', 45, sr, Math.SQRT1_2))
-  if (D > 1) for (const s of butterworth('lowpass', 0.36 * sra, sr, 8)) biquad(tmp, s)
+  const pre = [designBiquad('highpass', 45, sr, Math.SQRT1_2)]
+  if (D > 1) pre.push(...butterworth('lowpass', 0.36 * sra, sr, 8))
+  const st = cascadeState(pre)
   const len = Math.floor(src.length / D)
   const y = new Float32Array(len)
-  for (let i = 0; i < len; i++) y[i] = tmp[i * D]
+  const blk = new Float32Array(STREAM_BLOCK * D)
+  for (let b0 = 0; b0 < len * D; b0 += blk.length) {
+    const m = Math.min(blk.length, len * D - b0)
+    for (let i = 0; i < m; i++) {
+      const v = src[b0 + i]
+      blk[i] = v === v && v !== Infinity && v !== -Infinity ? v : 0
+    }
+    cascadeStream(blk, pre, st, m)
+    for (let i = 0; i < m; i += D) y[(b0 + i) / D] = blk[i]
+  }
 
   const nFrames = len === 0 ? 0 : Math.floor((len - 1) / hop) + 1
   const f0 = new Float32Array(nFrames)
@@ -73,20 +78,24 @@ export function analyzePitch(input: MonoBuffer, onProgress?: ProgressFn, opts: A
   const segLen = W + tauMax + 1
   const offset = (W >> 1) + (Math.round(sra / 250) >> 1)
 
-  // global prefix sum of squares (double precision)
-  const P = new Float64Array(len + 1)
-  for (let i = 0; i < len; i++) P[i + 1] = P[i] + y[i] * y[i]
-  const energyAt = (start: number, n: number): number => {
-    const a = Math.min(len, Math.max(0, start))
-    const b = Math.min(len, Math.max(0, start + n))
-    return P[b] - P[a]
+  // per-frame local prefix sums of squares (double precision) — no full-length array
+  const lp = new Float64Array(segLen + 2)
+  const prefixFor = (s0: number): void => {
+    lp[0] = 0
+    for (let j = 0; j <= segLen; j++) {
+      const idx = s0 + j
+      const v = idx >= 0 && idx < len ? y[idx] : 0
+      lp[j + 1] = lp[j] + v * v
+    }
   }
 
   // frame energies → silence threshold
   const frameDb = new Float32Array(nFrames)
   for (let f = 0; f < nFrames; f++) {
-    const e = energyAt(f * hop - offset, W) / W
-    frameDb[f] = 10 * Math.log10(e + 1e-20)
+    const s0 = f * hop - offset
+    let e = 0
+    for (let j = Math.max(0, s0); j < Math.min(len, s0 + W); j++) e += y[j] * y[j]
+    frameDb[f] = 10 * Math.log10(e / W + 1e-20)
   }
   const loud = percentile(frameDb, 0.95)
   const silenceDb = Math.max(-75, loud - 55)
@@ -146,11 +155,11 @@ export function analyzePitch(input: MonoBuffer, onProgress?: ProgressFn, opts: A
   }
 
   const analyseFrame = (f: number, r: Float64Array): void => {
-    const s = f * hop - offset
-    const e0 = energyAt(s, W)
+    prefixFor(f * hop - offset)
+    const e0 = lp[W]
     d[0] = 0
     for (let tau = 1; tau <= tauMax; tau++) {
-      const et = energyAt(s + tau, W)
+      const et = lp[tau + W] - lp[tau]
       const v = e0 + et - (2 * r[tau]) / N
       d[tau] = v > 0 ? v : 0
     }

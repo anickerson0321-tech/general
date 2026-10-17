@@ -335,7 +335,7 @@ describe('levels and loudness', () => {
       num += d * d
       den += detuned[i] * detuned[i]
     }
-    expect(10 * Math.log10(num / den)).toBeLessThan(-12)
+    expect(10 * Math.log10(num / den)).toBeLessThan(-30)
   })
 
   it('levelParams changes smoothly and in the expected direction', () => {
@@ -384,5 +384,65 @@ describe('levels and loudness', () => {
     expect(describeLevel(75).name).toBe('Radio')
     expect(describeLevel(95).name).toBe('Perfect')
     expect(describeLevel(NaN).name).toBe('Raw')
+  })
+})
+
+describe('cleanup (gate / breath control)', () => {
+  const segDb = (x: Float32Array, a: number, b: number): number => {
+    let e = 0
+    const i0 = Math.round(a * SR)
+    const i1 = Math.round(b * SR)
+    for (let i = i0; i < i1; i++) e += x[i] * x[i]
+    return 10 * Math.log10(e / (i1 - i0) + 1e-20)
+  }
+  // two phrases with room noise; a breath far from any word in the middle
+  const opts: SynthOptions = {
+    sr: SR,
+    duration: 3.6,
+    notes: [
+      { start: 0.3, end: 1.3, midi: 69 },
+      { start: 2.3, end: 3.3, midi: 72 },
+    ],
+    vibratoCents: 25,
+    consonants: true,
+    noiseFloor: 0.003,
+  }
+  const base = synthVoice(opts)
+  const rng = makeRng(5)
+  const x = new Float32Array(base)
+  for (let i = Math.round(1.7 * SR); i < Math.round(1.9 * SR); i++) {
+    const k = (i - 1.7 * SR) / (0.2 * SR)
+    x[i] += 0.03 * Math.sin(Math.PI * k) * (rng() * 2 - 1) // breath
+  }
+
+  for (const amount of [15, 40]) {
+    it(`amount ${amount}: words and consonants kept, noise and breaths reduced`, () => {
+      const out = polishVocal({ sampleRate: SR, data: x }, { amount, key: A_MINOR })
+      const y = out.left
+      const ref = (a: number, b: number): number => segDb(y, a, b) - segDb(x, a, b)
+      const vowel = ref(0.5, 1.2) // level change on sung material
+      const consonant = ref(2.235, 2.295) // "s" burst right before note 2
+      const noise = ref(0.0, 0.12) // room noise before anything
+      const breath = ref(1.72, 1.88)
+      expect(consonant - vowel).toBeGreaterThan(-7) // not chopped (de-esser may trim a few dB)
+      expect(noise - vowel).toBeLessThan(-8)
+      expect(breath - vowel).toBeLessThan(-4.5)
+      // words never cut: no 10 ms block inside a note drops > 6 dB below its neighbours' trend
+      const blocks: number[] = []
+      for (let t = 0.35; t < 1.25; t += 0.01) blocks.push(ref(t, t + 0.01))
+      expect(Math.min(...blocks)).toBeGreaterThan(vowel - 6)
+    })
+  }
+
+  it('processes 44.1 kHz takes end-to-end', () => {
+    const sr = 44100
+    const o44: SynthOptions = { ...DETUNED, sr }
+    const v = synthVoice(o44)
+    const out = polishVocal({ sampleRate: sr, data: v }, { amount: 100, key: A_MINOR })
+    expect(out.sampleRate).toBe(sr)
+    expect(out.left.length).toBe(v.length)
+    expect(stats(out.left).bad).toBe(0)
+    const e = centsVs(out.left, sr, (t) => (synthF0At(o44, t, false) === synthF0At(o44, t, false) ? 440 : NaN))
+    expect(Math.abs(med(e))).toBeLessThan(8)
   })
 })

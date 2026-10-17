@@ -2,7 +2,7 @@
 // Rosenberg glottal-flow-derivative source (band-limited closure) with jitter/shimmer and breath noise,
 // vibrato that blooms after the onset, portamento, 5-formant cascade filter interpolating between
 // vowel targets, and noise-burst consonants.
-import { Noise, OnePole, Resonator, SR, Svf, polyBlep, sinT } from './dsp'
+import { Biquad, Noise, OnePole, Resonator, SR, Svf, polyBlep, sinT } from './dsp'
 import type { Bus } from './instruments'
 import { MAX_NOTE, scrB } from './instruments'
 import type { VNote } from './model'
@@ -10,17 +10,17 @@ import type { Cons, SylPhones, Vowel } from './syllables'
 
 // male formant targets F1..F4 (Hz), slightly "opened" for singing
 const VF: Record<Vowel, [number, number, number, number]> = {
-  i: [300, 2250, 2950, 3500],
-  I: [400, 1950, 2550, 3500],
-  e: [540, 1800, 2500, 3500],
-  ae: [680, 1700, 2420, 3450],
-  a: [750, 1150, 2500, 3400],
-  o: [580, 880, 2450, 3350],
-  U: [450, 1050, 2300, 3350],
-  u: [320, 850, 2250, 3300],
-  A: [650, 1200, 2450, 3400],
-  R: [500, 1350, 1700, 3300],
-  '@': [520, 1450, 2500, 3400],
+  i: [300, 2250, 2950, 3350],
+  I: [400, 1950, 2600, 3300],
+  e: [540, 1800, 2550, 3300],
+  ae: [680, 1700, 2500, 3300],
+  a: [750, 1150, 2600, 3250],
+  o: [580, 880, 2550, 3250],
+  U: [450, 1050, 2450, 3200],
+  u: [320, 850, 2400, 3200],
+  A: [650, 1200, 2550, 3250],
+  R: [500, 1350, 1700, 3200],
+  '@': [520, 1450, 2550, 3250],
 }
 const BW = [75, 95, 150, 220]
 
@@ -38,20 +38,20 @@ interface CDef {
 const CD: Record<Cons, CDef> = {
   p: { type: 'stop', voiced: false, dur: 0.06, nf: 900, nq: 0.6, na: 0.5 },
   b: { type: 'stop', voiced: true, dur: 0.045, nf: 900, nq: 0.6, na: 0.3 },
-  t: { type: 'stop', voiced: false, dur: 0.06, nf: 4500, nq: 1.0, na: 0.55 },
+  t: { type: 'stop', voiced: false, dur: 0.06, nf: 4200, nq: 1.0, na: 0.4 },
   d: { type: 'stop', voiced: true, dur: 0.045, nf: 4000, nq: 1.0, na: 0.3 },
   k: { type: 'stop', voiced: false, dur: 0.065, nf: 2300, nq: 1.4, na: 0.5 },
   g: { type: 'stop', voiced: true, dur: 0.05, nf: 2100, nq: 1.4, na: 0.3 },
-  f: { type: 'fric', voiced: false, dur: 0.085, nf: 5500, nq: 0.5, na: 0.22 },
+  f: { type: 'fric', voiced: false, dur: 0.085, nf: 5000, nq: 0.5, na: 0.15 },
   v: { type: 'fric', voiced: true, dur: 0.06, nf: 4500, nq: 0.5, na: 0.12 },
   th: { type: 'fric', voiced: false, dur: 0.075, nf: 6500, nq: 0.5, na: 0.14 },
   dh: { type: 'fric', voiced: true, dur: 0.04, nf: 5000, nq: 0.5, na: 0.08 },
-  s: { type: 'fric', voiced: false, dur: 0.1, nf: 7200, nq: 2.2, na: 0.42 },
-  z: { type: 'fric', voiced: true, dur: 0.075, nf: 6800, nq: 2.2, na: 0.25 },
-  sh: { type: 'fric', voiced: false, dur: 0.1, nf: 3100, nq: 1.6, na: 0.42 },
+  s: { type: 'fric', voiced: false, dur: 0.1, nf: 6800, nq: 2.2, na: 0.28 },
+  z: { type: 'fric', voiced: true, dur: 0.075, nf: 6400, nq: 2.2, na: 0.16 },
+  sh: { type: 'fric', voiced: false, dur: 0.1, nf: 3100, nq: 1.6, na: 0.3 },
   zh: { type: 'fric', voiced: true, dur: 0.07, nf: 2900, nq: 1.6, na: 0.25 },
   h: { type: 'h', voiced: false, dur: 0.06, nf: 0, nq: 1, na: 0.5 },
-  ch: { type: 'aff', voiced: false, dur: 0.08, nf: 3100, nq: 1.6, na: 0.45 },
+  ch: { type: 'aff', voiced: false, dur: 0.08, nf: 3100, nq: 1.6, na: 0.32 },
   j: { type: 'aff', voiced: true, dur: 0.065, nf: 2900, nq: 1.6, na: 0.28 },
   m: { type: 'nasal', voiced: true, dur: 0.07, nf: 0, nq: 1, na: 0, f: [280, 1100, 2350], amp: 0.42 },
   n: { type: 'nasal', voiced: true, dur: 0.065, nf: 0, nq: 1, na: 0, f: [280, 1650, 2600], amp: 0.42 },
@@ -207,8 +207,8 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
   const segs = buildSegs(notes, t0, fs, o.breath)
   const nz = new Noise(o.seed * 977 + idx * 131 + 7)
   const res = [new Resonator(), new Resonator(), new Resonator(), new Resonator(), new Resonator()]
-  const f5 = fem ? 4900 : 4300
-  res[4].set(f5, 300)
+  const f5 = fem ? 4300 : 3850
+  res[4].set(f5, 260)
   const fric = new Svf()
   const hp = new OnePole()
   hp.setLp(fem ? 140 : 95)
@@ -232,7 +232,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
   let jit = 1
   let shim = 1
   const Tp = 0.42
-  const Tn = 0.13 + o.breath * 0.1
+  const Tn = 0.12 + o.breath * 0.08
   const tc = Tp + Tn
   const eScale = (2 * Tn) / Math.PI
   let norm = 1
@@ -250,7 +250,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
   const coefFast = 1 - Math.exp(-1 / (0.0008 * SR))
   const endRel = Math.round(0.07 * SR)
   const attackS = Math.round(0.03 * SR)
-  const breathAmt = 0.04 + o.breath * 0.22
+  const breathAmt = 0.015 + o.breath * 0.08
   let lastY = 0
   const pitchOf = (n: VNote) => (o.useHarm && n.harm !== undefined ? n.harm : n.midi) + o.detune / 100
   const computeMidi = (i: number): number => {
@@ -315,13 +315,13 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
       res[1].set(Math.max(F2, f1e + 250), BW[1] * (fem ? 1.1 : 1))
       res[2].set(F3, BW[2])
       res[3].set(F4, BW[3])
-      if ((i & 63) === 0) {
+      if ((i & 127) === 0) {
         let p = 0
-        for (let h = 1; h <= 8; h++) {
+        for (let h = 1; h <= 6; h++) {
           const fh = f0 * h
           if (fh > SR * 0.45) break
           let g = 1
-          for (let k = 0; k < 5; k++) g *= res[k].mag(fh)
+          for (let k = 0; k < 3; k++) g *= res[k].mag(fh)
           const w = 1 / Math.pow(h, 0.8)
           p += g * g * w * w
         }
@@ -347,7 +347,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
     } else if (phase < tc) {
       const x = (phase - Tp) / (4 * Tn)
       flow = sinT(x + 0.25)
-      e = -sinT(x) * eScale
+      e = -sinT(x)
     } else {
       flow = 0
       e = 0
@@ -384,5 +384,8 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
     lastY = out
   }
   void lastY
+  // vocal EQ on the phrase (mono, only where there is singing)
+  const eq = [new Biquad('peak', 350, 0.9, -2.5), new Biquad('highshelf', 2000, 0.6, 2), new Biquad('peak', fem ? 3300 : 2900, 1.0, 3), new Biquad('lowpass', 7500, 0.6)]
+  for (const f of eq) f.run(buf, 0, len)
   bus.add(buf, len, Math.round(t0 * SR), o.gain, o.pan, o.rev, o.dly, false, o.tag)
 }
