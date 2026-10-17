@@ -421,8 +421,8 @@ export interface PadChord {
 
 /** render a sustained chord with per-note stereo oscillators */
 export function renderPad(bus: Bus, kind: PadKind, chIn: PadChord, gain: number, rev: number, bright: number, duck: boolean, seed: number, opts?: { attack?: number; release?: number; staccato?: boolean }): void {
-  const ch: PadChord = { ...chIn, dur: q(chIn.dur, 20), vel: q(chIn.vel, 5) }
-  const key = `pad|${kind}|${ch.notes.join(',')}|${ch.dur}|${ch.vel}|${q(bright, 3)}|${opts?.attack ?? ''}|${opts?.release ?? ''}|${opts?.staccato ? 1 : 0}`
+  const ch: PadChord = { ...chIn, dur: q(chIn.dur, 20), vel: kind === 'brass' ? q(chIn.vel, 5) : chIn.vel }
+  const key = `pad|${kind}|${ch.notes.join(',')}|${ch.dur}|${kind === 'brass' ? ch.vel : ''}|${q(bright, 3)}|${opts?.attack ?? ''}|${opts?.release ?? ''}|${opts?.staccato ? 1 : 0}`
   const hit = cacheGet(key)
   if (hit) {
     const half = hit.length >> 1
