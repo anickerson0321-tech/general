@@ -45,7 +45,9 @@ class PoolWorker {
   }
 }
 
-const POOL_SIZE = Math.max(2, Math.min(3, (navigator.hardwareConcurrency || 2) - 1))
+// Phones get one worker so two songs never render at once (each render can use ~300 MB).
+const isPhone = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4
+const POOL_SIZE = isPhone ? 1 : Math.max(2, Math.min(3, (navigator.hardwareConcurrency || 2) - 1))
 const pool: PoolWorker[] = []
 let nextId = 1
 

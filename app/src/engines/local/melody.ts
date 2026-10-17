@@ -289,7 +289,7 @@ export function pitchLine(
       if (prev !== null) {
         const d = c - prev
         const ad = Math.abs(d)
-        if (ad === 0) cost += rh.len[i] <= 2 && i > 0 ? 0.15 : 0.6
+        if (ad === 0) cost += rh.len[i] <= 2 && i > 0 ? 0.32 : 0.75
         else if (ad === 1) cost += 0
         else if (ad === 2) cost += 0.3 * leapiness
         else if (ad === 3) cost += 1.0 * leapiness

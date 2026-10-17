@@ -444,7 +444,7 @@ export function renderPad(bus: Bus, kind: PadKind, chIn: PadChord, gain: number,
   const nz = new Noise(seed)
   for (let ni = 0; ni < ch.notes.length; ni++) {
     const f = midiToHz(ch.notes[ni])
-    const nOsc: number = kind === "supersaw" ? 6 : kind === "strings" ? 4 : 2
+    const nOsc: number = kind === "supersaw" ? 6 : kind === "strings" ? 3 : 2
     const detune = kind === 'supersaw' ? 0.012 : kind === 'strings' ? 0.006 : kind === 'brass' ? 0.003 : 0.004
     const ph = new Float64Array(nOsc)
     const dts = new Float64Array(nOsc)

@@ -450,7 +450,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
       const t0 = t16(span.p0)
       const final = s === lastSec && span.p0 + span.len16 >= songEnd16
       const dur = (final ? 3.2 : t16(span.p0 + span.len16) - t0) + 0.02
-      const notes = layer.kind === 'strings' && s.energy > 0.7 ? [...v, v[0] + 12] : layer.kind === 'brass' ? [v[0] - 12, ...v.slice(0, 3)] : v
+      const notes = [...new Set(layer.kind === 'strings' && s.energy > 0.7 ? [...v, v[0] + 12] : layer.kind === 'brass' ? [v[0] - 12, ...v.slice(0, 3)] : v)]
       renderPad(bus, layer.kind, { t: t0, dur, notes, vel: 0.6 + s.energy * 0.4 }, layer.gain, layer.rev * revAmt, bright, p.sidechain && layer.kind !== 'strings', mixSeed(seed, layer.kind, span.p0), layer.kind === 'brass' ? { attack: 0.12 } : undefined)
     }
   }
