@@ -24,6 +24,12 @@ export function integratedLoudness(channels: Float32Array[], sr: number): number
   const nSteps = Math.ceil(n / step)
   const stepPow = new Float64Array(nSteps)
   for (let c = 0; c < uniq.length; c++) kWeightedStepPower(uniq[c], weight[c], shelf, hp, step, stepPow)
+  return gatedLoudness(stepPow, n, step)
+}
+
+/** BS.1770 gating over 100 ms step powers (400 ms blocks, 75% overlap). */
+function gatedLoudness(stepPow: Float64Array, n: number, step: number): number {
+  const nSteps = stepPow.length
   const blocks: number[] = []
   if (nSteps < 4) {
     let acc = 0
@@ -147,12 +153,20 @@ export interface LimiterParams {
  * Gain at n = box-average over L of the release-smoothed minimum of the required gain
  * over [n, n+L-1], so every (true) peak is reached before it arrives. Guarantees |sample| ≤ ceiling.
  */
-export function limitStereo(left: Float32Array, right: Float32Array, sr: number, p: LimiterParams): number {
+export function limitStereo(
+  left: Float32Array,
+  right: Float32Array,
+  sr: number,
+  p: LimiterParams,
+  opts: { preGain?: number; measureOnly?: boolean } = {},
+): { maxGrDb: number; lufs: number } {
   const n = left.length
-  if (n === 0) return 0
+  if (n === 0) return { maxGrDb: 0, lufs: -Infinity }
+  const pg = opts.preGain ?? 1
+  const dry = opts.measureOnly === true
   const ceil = Math.pow(10, p.ceilingDb / 20)
   const target = ceil * 0.995
-  const check = target * 0.7
+  const check = (target * 0.7) / pg
   const L = Math.max(5, Math.round(((p.lookaheadMs ?? 2) / 1000) * sr))
   const aRel = Math.exp(-1 / (((p.releaseMs ?? 80) / 1000) * sr))
   const R = L + 1
@@ -164,10 +178,25 @@ export function limitStereo(left: Float32Array, right: Float32Array, sr: number,
   let sum = L
   let st = 1
   let minG = 1
+  // streaming K-weighted loudness of the (would-be) output
+  const shelf = designBiquad('highshelf', 1681.974450955533, sr, 0.7071752369554196, 3.999843853973347)
+  const hp = designBiquad('highpass', 38.13547087602444, sr, 0.5003270373238773)
+  const step = Math.max(1, Math.round(0.1 * sr))
+  const stepPow = new Float64Array(Math.ceil(n / step))
+  const kz = new Float64Array(8)
+  const kOut = (v: number, o: number): number => {
+    const y = shelf.b0 * v + kz[o]
+    kz[o] = shelf.b1 * v - shelf.a1 * y + kz[o + 1]
+    kz[o + 1] = shelf.b2 * v - shelf.a2 * y
+    const u = hp.b0 * y + kz[o + 2]
+    kz[o + 2] = hp.b1 * y - hp.a1 * u + kz[o + 3]
+    kz[o + 3] = hp.b2 * y - hp.a2 * u
+    return u * u
+  }
   for (let k = 0; k < n + L - 1; k++) {
     let r = 1
     if (k < n) {
-      const e = Math.max(tpAt(left, k, check), tpAt(right, k, check))
+      const e = pg * Math.max(tpAt(left, k, check), tpAt(right, k, check))
       if (e > target) r = target / e
     }
     reqRing[k % R] = r
@@ -183,20 +212,20 @@ export function limitStereo(left: Float32Array, right: Float32Array, sr: number,
     sum += st - box[bi]
     box[bi] = st
     const g = sum / L
-    if (g < 1) {
-      left[ni] *= g
-      right[ni] *= g
-      if (g < minG) minG = g
-    }
-  }
-  // final safety: hard ceiling + NaN scrub
-  for (let i = 0; i < n; i++) {
-    let a = left[i]
-    let b = right[i]
+    if (g < minG) minG = g
+    // apply (or simulate) gain + hard ceiling + NaN scrub
+    let a = Math.fround(left[ni] * pg) * g
+    let b = Math.fround(right[ni] * pg) * g
     if (!(a === a)) a = 0
     if (!(b === b)) b = 0
-    left[i] = a > ceil ? ceil : a < -ceil ? -ceil : a
-    right[i] = b > ceil ? ceil : b < -ceil ? -ceil : b
+    a = a > ceil ? ceil : a < -ceil ? -ceil : a
+    b = b > ceil ? ceil : b < -ceil ? -ceil : b
+    if (dry) {
+      stepPow[(ni / step) | 0] += kOut(a, 0) + kOut(b, 4)
+    } else {
+      left[ni] = a
+      right[ni] = b
+    }
   }
-  return -20 * Math.log10(minG)
+  return { maxGrDb: -20 * Math.log10(minG), lufs: dry ? gatedLoudness(stepPow, n, step) : NaN }
 }

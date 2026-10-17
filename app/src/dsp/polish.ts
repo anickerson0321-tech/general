@@ -14,13 +14,14 @@ import type { ResolvedChain } from './chain'
 import { analyzePitch } from './pitch'
 import { fft } from './fft'
 import type { Biquad } from './biquad'
-import { butterworth, cascade, dcBlock, designBiquad } from './biquad'
+import { STREAM_BLOCK, butterworth, cascade, cascadeState, cascadeStream, dcBlock, designBiquad } from './biquad'
 import { levelParams } from './chain'
 import { spectralDenoise } from './denoise'
 import { compress, deEss, tapeSaturate, vocalGate } from './dynamics'
 import { integratedLoudness, limitStereo } from './master'
 import { detectMarks, psolaShift } from './psola'
-import { placeDoubles, renderDelay, renderReverb } from './space'
+import type { WetBus } from './space'
+import { addDelay, addDouble, addReverb } from './space'
 import { notesFromTrack, prepareTrack } from './track'
 import { planCorrection } from './tune'
 import { clamp, percentile, sanitize, smoothstep } from './util'
@@ -126,47 +127,63 @@ function measureTilt(x: Float32Array, sr: number, ct: CleanTrack): number {
   return num / den
 }
 
-/** 2:1 decimation with an 8th-order Butterworth anti-alias filter at ~0.22·sr. */
-function decimate2(x: Float32Array, sr: number): Float32Array {
-  const tmp = new Float32Array(x)
-  cascade(tmp, butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 8))
-  const m = Math.ceil(x.length / 2)
-  const out = new Float32Array(m)
-  for (let i = 0; i < m; i++) out[i] = tmp[2 * i]
-  return out
-}
-
-/** 1:2 interpolation (linear + 4th-order low-pass at ~0.22·sr) to exactly `n` samples. */
-function upsample2(x: Float32Array, n: number, sr: number): Float32Array {
-  const out = new Float32Array(n)
-  const m = x.length
-  for (let i = 0; i < n; i++) {
-    const j = i >> 1
-    if (j >= m) break
-    out[i] = i & 1 ? 0.5 * (x[j] + (j + 1 < m ? x[j + 1] : 0)) : x[j]
+/** 2:1 decimation (8th-order Butterworth anti-alias at ~0.22·sr), block-streamed into `out` (length n>>1). */
+function decimate2Into(x: Float32Array, sr: number, out: Float32Array): void {
+  const secs = butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 8)
+  const st = cascadeState(secs)
+  const blk = new Float32Array(STREAM_BLOCK)
+  const m = out.length
+  for (let b0 = 0; b0 < 2 * m; b0 += STREAM_BLOCK) {
+    const len = Math.min(STREAM_BLOCK, x.length - b0)
+    blk.set(x.subarray(b0, b0 + len))
+    cascadeStream(blk, secs, st, len)
+    for (let j = 0; j < len; j += 2) if ((b0 + j) >> 1 < m) out[(b0 + j) >> 1] = blk[j]
   }
-  cascade(out, butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 4))
-  return out
 }
 
-function mixInto(
+/**
+ * Final mix: right = lead + up(wetR), left = lead + up(wetL), where up() is 1:2 linear
+ * interpolation followed by a 4th-order low-pass at ~0.22·sr. `left` may alias `lead`.
+ */
+function mixUpsampled(
+  lead: Float32Array,
   wetL: Float32Array,
   wetR: Float32Array,
-  send: Float32Array | null,
-  src: { left: Float32Array; right: Float32Array },
-  gain: number,
-  sendGain: number,
+  left: Float32Array,
+  right: Float32Array,
+  sr: number,
 ): void {
-  const n = wetL.length
-  const l = src.left
-  const r = src.right
-  for (let i = 0; i < n; i++) {
-    wetL[i] += gain * l[i]
-    wetR[i] += gain * r[i]
-  }
-  if (send && sendGain > 0) {
-    const sg = gain * sendGain
-    for (let i = 0; i < n; i++) send[i] += sg * (l[i] + r[i])
+  const n = lead.length
+  const m = wetL.length
+  const secs = butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 4)
+  const stL = cascadeState(secs)
+  const stR = cascadeState(secs)
+  const bL = new Float32Array(STREAM_BLOCK)
+  const bR = new Float32Array(STREAM_BLOCK)
+  for (let b0 = 0; b0 < n; b0 += STREAM_BLOCK) {
+    const len = Math.min(STREAM_BLOCK, n - b0)
+    for (let k = 0; k < len; k++) {
+      const i = b0 + k
+      const j = i >> 1
+      if (j >= m) {
+        bL[k] = 0
+        bR[k] = 0
+      } else if (i & 1) {
+        bL[k] = 0.5 * (wetL[j] + (j + 1 < m ? wetL[j + 1] : 0))
+        bR[k] = 0.5 * (wetR[j] + (j + 1 < m ? wetR[j + 1] : 0))
+      } else {
+        bL[k] = wetL[j]
+        bR[k] = wetR[j]
+      }
+    }
+    cascadeStream(bL, secs, stL, len)
+    cascadeStream(bR, secs, stR, len)
+    for (let k = 0; k < len; k++) {
+      const i = b0 + k
+      const d = lead[i]
+      right[i] = d + bR[k]
+      left[i] = d + bL[k]
+    }
   }
 }
 
@@ -187,7 +204,9 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   const report = (f: number, label: string): void => onProgress?.(clamp(f, 0, 1), label)
 
   // ---- 1. sanitize, DC, high-pass
-  let x = sanitize(Float32Array.from(input.data))
+  // `x` is the lead, processed in place throughout; it becomes the LEFT output channel.
+  const x = sanitize(Float32Array.from(input.data))
+  const inLufs = integratedLoudness([x, x], sr) // dual-mono, filtered once
   dcBlock(x, sr, 5)
   cascade(x, butterworth('highpass', ch.highpassHz, sr, 4))
 
@@ -205,7 +224,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   for (let i = 0; i < n; i++) x[i] *= inGain
 
   // ---- 4. stationary noise reduction
-  if (ch.denoiseDb > 0.1 && !silent) x = spectralDenoise(x, sr, ch.denoiseDb).out
+  if (ch.denoiseDb > 0.1 && !silent) spectralDenoise(x, sr, ch.denoiseDb) // in place
   report(0.33, 'Tuning')
 
   // ---- 5. pitch correction (TD-PSOLA)
@@ -227,7 +246,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
     })
     shiftPlan = plan.shift
     const marks = detectMarks(x, sr, ct.f0, ct.hopSec)
-    x = psolaShift(x, marks, { shift: plan.shift, hopSec: ct.hopSec, formantPreserve: params.formantPreserve !== false })
+    psolaShift(x, marks, { shift: plan.shift, hopSec: ct.hopSec, formantPreserve: params.formantPreserve !== false }, x) // in place
   }
   report(0.5, 'Cleaning up')
 
@@ -279,132 +298,127 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   deEss(x, sr, { freq: ch.deEssHz, q: 0.8, maxReductionDb: ch.deEssDb, thresholdDb: REF_DB - 24, relDb: -9 })
   tapeSaturate(x, sr, ch.saturation)
   if (ch.parallelMix > 0.001) {
-    const smash = compress(x, sr, { thresholdDb: REF_DB - 20, ratio: 10, kneeDb: 3, attackMs: 1, releaseMs: 70, makeupDb: 14 }, new Float32Array(n))
-    for (let i = 0; i < n; i++) x[i] += ch.parallelMix * smash[i]
+    // parallel ("New York") compression blended in place: x · (1 + mix · gain)
+    compress(x, sr, { thresholdDb: REF_DB - 20, ratio: 10, kneeDb: 3, attackMs: 1, releaseMs: 70, makeupDb: 14, blend: ch.parallelMix })
   }
   const lead = x
   report(0.68, 'Adding space')
 
-  // ---- 10. space — the wet bus runs at half rate (all returns are band-limited < 10 kHz)
-  const half = sr >= 44100
-  const wsr = half ? sr / 2 : sr
-  const leadW = half ? decimate2(lead, sr) : lead
-  const nW = leadW.length
-  const wetL = new Float32Array(nW)
-  const wetR = new Float32Array(nW)
-  const revSend = new Float32Array(leadW)
-  let anyWet = false
-  if (ch.doubleMix > 0.001 && !silent) {
-    anyWet = true
-    const hop = ct.hopSec
-    const f0c = new Float32Array(ct.n)
-    for (let i = 0; i < ct.n; i++) f0c[i] = ct.f0[i] * (shiftPlan ? Math.pow(2, shiftPlan[i] / 12) : 1)
-    const marks = detectMarks(leadW, wsr, f0c, hop)
-    const wanderA = new Float32Array(ct.n)
-    const wanderB = new Float32Array(ct.n)
-    for (let i = 0; i < ct.n; i++) {
-      const t = i * hop
-      wanderA[i] = 0.03 * Math.sin(2 * Math.PI * 0.23 * t) + 0.015 * Math.sin(2 * Math.PI * 0.61 * t + 1)
-      wanderB[i] = 0.03 * Math.sin(2 * Math.PI * 0.19 * t + 2) + 0.015 * Math.sin(2 * Math.PI * 0.53 * t)
-    }
-    const det = ch.doubleDetuneCents / 100
-    const dA = psolaShift(leadW, marks, { shift: wanderA, hopSec: hop, offset: det })
-    const dB = psolaShift(leadW, marks, { shift: wanderB, hopSec: hop, offset: -det })
-    const dbl = placeDoubles(dA, dB, wsr, {
-      delayMsL: ch.doubleDelayMs,
-      delayMsR: ch.doubleDelayMs * 1.45,
-      wanderMs: 2.5,
-      width: ch.doubleWidth,
-    })
-    mixInto(wetL, wetR, revSend, dbl, ch.doubleMix, 0.5)
-  }
-  if (ch.slapMix > 0.001) {
-    anyWet = true
-    const slap = renderDelay(leadW, wsr, {
-      msL: ch.slapMs,
-      msR: ch.slapMs * 1.13,
-      feedback: 0,
-      pingPong: false,
-      lowCutHz: 300,
-      highCutHz: 5500,
-      duckDb: 3,
-    })
-    mixInto(wetL, wetR, revSend, slap, ch.slapMix, 0.3)
-  }
-  if (ch.echoMix > 0.001) {
-    anyWet = true
-    const echo = renderDelay(leadW, wsr, {
-      msL: ch.echoMsL,
-      msR: ch.echoMsR,
-      feedback: ch.echoFeedback,
-      pingPong: true,
-      lowCutHz: 250,
-      highCutHz: 4500,
-      duckDb: 8,
-    })
-    mixInto(wetL, wetR, revSend, echo, ch.echoMix, 0.3)
-  }
-  report(0.78, 'Adding reverb')
-  if (ch.reverbMix > 0.001) {
-    anyWet = true
-    const rev = renderReverb(revSend, wsr, {
-      decaySec: ch.reverbDecaySec,
-      size: ch.reverbSize,
-      damping: ch.reverbDamping,
-      preDelayMs: ch.reverbPreDelayMs,
-      early: ch.reverbEarly,
-      diffusion: ch.reverbDiffusion,
-      lowCutHz: 180,
-      highCutHz: 9000,
-      width: 1,
-    })
-    mixInto(wetL, wetR, null, rev, ch.reverbMix, 0)
-  }
-  const left = new Float32Array(lead)
-  const right = new Float32Array(lead)
+  // ---- 10. space — the wet bus runs at half rate (all returns are band-limited < 10 kHz).
+  // Memory plan (phone workers): the RIGHT output buffer is allocated now and its two
+  // halves host the half-rate lead and the reverb send; wet effects stream and accumulate
+  // in place; the upsampled wet bus is mixed straight into left/right at the end.
+  const wantDoubles = ch.doubleMix > 0.001 && !silent
+  const anyWet = wantDoubles || ch.slapMix > 0.001 || ch.echoMix > 0.001 || ch.reverbMix > 0.001
+  const right = new Float32Array(n)
+  const left = x
   if (anyWet) {
-    const upL = half ? upsample2(wetL, n, sr) : wetL
-    const upR = half ? upsample2(wetR, n, sr) : wetR
-    for (let i = 0; i < n; i++) {
-      left[i] += upL[i]
-      right[i] += upR[i]
+    const half = sr >= 44100
+    const wsr = half ? sr / 2 : sr
+    const nW = half ? n >> 1 : n
+    let leadW: Float32Array
+    let revSend: Float32Array
+    if (half) {
+      leadW = right.subarray(0, nW)
+      revSend = right.subarray(nW, 2 * nW)
+      decimate2Into(lead, sr, leadW)
+    } else {
+      leadW = lead
+      revSend = right
     }
-  }
+    revSend.set(leadW)
+    const bus: WetBus = { left: new Float32Array(nW), right: new Float32Array(nW), send: revSend }
+    let tmp: Float32Array | null = null
+    if (wantDoubles) {
+      const hop = ct.hopSec
+      const f0c = new Float32Array(ct.n)
+      for (let i = 0; i < ct.n; i++) f0c[i] = ct.f0[i] * (shiftPlan ? Math.pow(2, shiftPlan[i] / 12) : 1)
+      const marks = detectMarks(leadW, wsr, f0c, hop)
+      const wanderA = new Float32Array(ct.n)
+      const wanderB = new Float32Array(ct.n)
+      for (let i = 0; i < ct.n; i++) {
+        const t = i * hop
+        wanderA[i] = 0.03 * Math.sin(2 * Math.PI * 0.23 * t) + 0.015 * Math.sin(2 * Math.PI * 0.61 * t + 1)
+        wanderB[i] = 0.03 * Math.sin(2 * Math.PI * 0.19 * t + 2) + 0.015 * Math.sin(2 * Math.PI * 0.53 * t)
+      }
+      const det = ch.doubleDetuneCents / 100
+      const dp = { delayMsL: ch.doubleDelayMs, delayMsR: ch.doubleDelayMs * 1.45, wanderMs: 2.5, width: ch.doubleWidth }
+      tmp = new Float32Array(nW)
+      psolaShift(leadW, marks, { shift: wanderA, hopSec: hop, offset: det }, tmp)
+      addDouble(tmp, wsr, 0, dp, ch.doubleMix, bus, 0.5)
+      psolaShift(leadW, marks, { shift: wanderB, hopSec: hop, offset: -det }, tmp)
+      addDouble(tmp, wsr, 1, dp, ch.doubleMix, bus, 0.5)
+    }
+    if (ch.slapMix > 0.001) {
+      const sp = { msL: ch.slapMs, msR: ch.slapMs * 1.13, feedback: 0, pingPong: false, lowCutHz: 300, highCutHz: 5500, duckDb: 3 }
+      addDelay(leadW, wsr, sp, ch.slapMix, bus, 0.3)
+    }
+    if (ch.echoMix > 0.001) {
+      const ep = {
+        msL: ch.echoMsL,
+        msR: ch.echoMsR,
+        feedback: ch.echoFeedback,
+        pingPong: true,
+        lowCutHz: 250,
+        highCutHz: 4500,
+        duckDb: 8,
+      }
+      addDelay(leadW, wsr, ep, ch.echoMix, bus, 0.3)
+    }
+    report(0.78, 'Adding reverb')
+    if (ch.reverbMix > 0.001) {
+      const rp = {
+        decaySec: ch.reverbDecaySec,
+        size: ch.reverbSize,
+        damping: ch.reverbDamping,
+        preDelayMs: ch.reverbPreDelayMs,
+        early: ch.reverbEarly,
+        diffusion: ch.reverbDiffusion,
+        lowCutHz: 180,
+        highCutHz: 9000,
+        width: 1,
+      }
+      // tank scratch: the half-rate lead's storage is free now (when it isn't the lead itself)
+      const scratchL = half ? leadW : new Float32Array(nW)
+      const scratchR = tmp ?? new Float32Array(nW)
+      addReverb(revSend, wsr, rp, ch.reverbMix, { left: bus.left, right: bus.right }, scratchL, scratchR)
+    }
+    tmp = null
+    // final mix: right = lead + wetR, left = lead + wetL (upsampled on the fly when half-rate)
+    if (half) mixUpsampled(lead, bus.left, bus.right, left, right, sr)
+    else
+      for (let i = 0; i < n; i++) {
+        right[i] = lead[i] + bus.right[i]
+        left[i] = lead[i] + bus.left[i]
+      }
+  } else right.set(lead)
   report(0.9, 'Mastering')
 
-  // ---- 11. loudness + limiter
-  const rawL = new Float32Array(input.data)
-  sanitize(rawL)
-  const inLufs = integratedLoudness([rawL, rawL], sr) // dual-mono, filtered once
+  // ---- 11. loudness + limiter (gain chosen by exact measure-only limiter passes; one real pass)
   const curLufs = integratedLoudness([left, right], sr)
+  const lim = { ceilingDb: ch.limiterCeilingDb, lookaheadMs: 2, releaseMs: 80 }
   if (curLufs > -90 && !silent) {
     const keep = inLufs > -90 ? inLufs : curLufs
     const want = ch.normalizeWeight * ch.targetLufs + (1 - ch.normalizeWeight) * keep
     let gDb = clamp(want - curLufs, -40, 40)
-    const preL = new Float32Array(left)
-    const preR = new Float32Array(right)
-    for (let iter = 0; iter < 2; iter++) {
-      const g = Math.pow(10, gDb / 20)
-      for (let i = 0; i < n; i++) {
-        left[i] = preL[i] * g
-        right[i] = preR[i] * g
-      }
-      limitStereo(left, right, sr, { ceilingDb: ch.limiterCeilingDb, lookaheadMs: 2, releaseMs: 80 })
-      const got = integratedLoudness([left, right], sr)
+    if (ch.normalizeWeight >= 0.05) {
+      const got = limitStereo(left, right, sr, lim, { preGain: Math.pow(10, gDb / 20), measureOnly: true }).lufs
       const err = want - got
-      if (!(got > -90) || Math.abs(err) < 0.4 || ch.normalizeWeight < 0.05) break
-      gDb = clamp(gDb + err, gDb - 6, gDb + 6)
+      if (got > -90 && Math.abs(err) >= 0.4) gDb = clamp(gDb + err, gDb - 6, gDb + 6)
     }
+    limitStereo(left, right, sr, lim, { preGain: Math.pow(10, gDb / 20) })
   } else {
     limitStereo(left, right, sr, { ceilingDb: ch.limiterCeilingDb })
   }
   // seamless start of the slider: cross-fade from the untouched take over amounts 0..3
   if (amount < 3) {
     const w = smoothstep(0, 3, amount)
-    const dry = rawCopy(input).left
+    const src = input.data
     for (let i = 0; i < n; i++) {
-      left[i] = dry[i] + w * (left[i] - dry[i])
-      right[i] = dry[i] + w * (right[i] - dry[i])
+      const v = src[i]
+      const d = v === v ? (v > 1 ? 1 : v < -1 ? -1 : v) : 0
+      left[i] = d + w * (left[i] - d)
+      right[i] = d + w * (right[i] - d)
     }
   }
   report(1, 'Done')
