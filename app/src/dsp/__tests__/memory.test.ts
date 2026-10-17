@@ -44,4 +44,6 @@ it.skipIf(!proc?.env.DSP_MEM)('peak memory: analyzePitch + polishVocal on 180 s 
       `(incl. ${outBytes.toFixed(0)} MB stereo output), ${ms.toFixed(0)} ms, gc=${gc ? 'yes' : 'no'}`,
   )
   expect(out.left.length).toBe(data.length)
+  // phone Web Worker budget: hard ceiling 200 MB above baseline (incl. the 69 MB output)
+  expect(peak - base).toBeLessThan(200e6)
 }, 120000)

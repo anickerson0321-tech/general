@@ -326,9 +326,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       leadW = lead
       revSend = right
     }
-    revSend.set(leadW)
-    const bus: WetBus = { left: new Float32Array(nW), right: new Float32Array(nW), send: revSend }
-    let tmp: Float32Array | null = null
+    const bus: WetBus = { left: new Float32Array(nW), right: new Float32Array(nW) }
     if (wantDoubles) {
       const hop = ct.hopSec
       const f0c = new Float32Array(ct.n)
@@ -343,12 +341,15 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       }
       const det = ch.doubleDetuneCents / 100
       const dp = { delayMsL: ch.doubleDelayMs, delayMsR: ch.doubleDelayMs * 1.45, wanderMs: 2.5, width: ch.doubleWidth }
-      tmp = new Float32Array(nW)
-      psolaShift(leadW, marks, { shift: wanderA, hopSec: hop, offset: det }, tmp)
-      addDouble(tmp, wsr, 0, dp, ch.doubleMix, bus, 0.5)
-      psolaShift(leadW, marks, { shift: wanderB, hopSec: hop, offset: -det }, tmp)
-      addDouble(tmp, wsr, 1, dp, ch.doubleMix, bus, 0.5)
-    }
+      // the (not yet built) reverb-send storage doubles as the PSOLA scratch
+      psolaShift(leadW, marks, { shift: wanderA, hopSec: hop, offset: det }, revSend)
+      addDouble(revSend, wsr, 0, dp, ch.doubleMix, bus)
+      psolaShift(leadW, marks, { shift: wanderB, hopSec: hop, offset: -det }, revSend)
+      addDouble(revSend, wsr, 1, dp, ch.doubleMix, bus)
+      // reverb send = lead + 0.5 × doubles (the bus holds only the doubles so far)
+      for (let i = 0; i < nW; i++) revSend[i] = leadW[i] + 0.5 * (bus.left[i] + bus.right[i])
+    } else revSend.set(leadW)
+    bus.send = revSend
     if (ch.slapMix > 0.001) {
       const sp = { msL: ch.slapMs, msR: ch.slapMs * 1.13, feedback: 0, pingPong: false, lowCutHz: 300, highCutHz: 5500, duckDb: 3 }
       addDelay(leadW, wsr, sp, ch.slapMix, bus, 0.3)
@@ -380,10 +381,8 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       }
       // tank scratch: the half-rate lead's storage is free now (when it isn't the lead itself)
       const scratchL = half ? leadW : new Float32Array(nW)
-      const scratchR = tmp ?? new Float32Array(nW)
-      addReverb(revSend, wsr, rp, ch.reverbMix, { left: bus.left, right: bus.right }, scratchL, scratchR)
+      addReverb(revSend, wsr, rp, ch.reverbMix, { left: bus.left, right: bus.right }, scratchL)
     }
-    tmp = null
     // final mix: right = lead + wetR, left = lead + wetL (upsampled on the fly when half-rate)
     if (half) mixUpsampled(lead, bus.left, bus.right, left, right, sr)
     else

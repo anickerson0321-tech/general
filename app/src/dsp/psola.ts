@@ -36,6 +36,21 @@ function f0AtSample(f0: Float32Array, hopSec: number, sr: number, n: number): nu
 export function detectMarks(x: Float32Array, sr: number, f0: Float32Array, hopSec: number): Marks {
   const segments: MarkSegment[] = []
   const nF = f0.length
+  // one scratch buffer (sized for the longest voiced run) reused by every segment
+  let maxLen = 0
+  for (let a = 0; a < nF; ) {
+    if (!(f0[a] > 0)) {
+      a++
+      continue
+    }
+    let b = a
+    let fmin = Infinity
+    while (b < nF && f0[b] > 0) fmin = Math.min(fmin, f0[b++])
+    const margin = 2 * Math.ceil(sr / Math.max(40, fmin))
+    maxLen = Math.max(maxLen, Math.round((b - a + 1) * hopSec * sr) + 2 * margin + 4)
+    a = b
+  }
+  const scratch = new Float32Array(Math.min(x.length, maxLen))
   let i = 0
   while (i < nF) {
     if (!(f0[i] > 0)) {
@@ -47,7 +62,7 @@ export function detectMarks(x: Float32Array, sr: number, f0: Float32Array, hopSe
     const start = Math.max(0, Math.round((i - 0.5) * hopSec * sr))
     const end = Math.min(x.length - 1, Math.round((j - 0.5) * hopSec * sr))
     if (end - start > 8) {
-      const seg = marksForSegment(x, sr, f0, hopSec, start, end, i, j)
+      const seg = marksForSegment(x, sr, f0, hopSec, start, end, i, j, scratch)
       if (seg) segments.push(seg)
     }
     i = j
@@ -64,6 +79,7 @@ function marksForSegment(
   end: number,
   fa: number,
   fb: number,
+  scratch: Float32Array,
 ): MarkSegment | null {
   // median f0 → low-pass cutoff that keeps the fundamental dominant
   const fs: number[] = []
@@ -74,7 +90,8 @@ function marksForSegment(
   const margin = Math.ceil(maxP * 2)
   const lo = Math.max(0, start - margin)
   const hi = Math.min(x.length, end + margin)
-  const s = x.slice(lo, hi)
+  const s = hi - lo <= scratch.length ? scratch.subarray(0, hi - lo) : new Float32Array(hi - lo)
+  s.set(x.subarray(lo, hi))
   filtfilt(s, butterworth('lowpass', Math.min(Math.max(1.6 * fmed, 250), 0.45 * sr), sr, 2))
   let mx = 0
   let mn = 0
@@ -167,6 +184,9 @@ export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions, int
   const out = into ?? new Float32Array(x)
   if (!inPlace && into) out.set(x)
   let pending: { a: number; b: number; lo: number; vals: Float32Array } | null = null
+  const pool = [new Float32Array(0), new Float32Array(0)]
+  let wsPool = new Float32Array(0)
+  let slot = 0
   const flush = (): void => {
     if (!pending) return
     const { a, b, lo, vals } = pending
@@ -200,8 +220,15 @@ export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions, int
     for (let k = 1; k < M; k++) maxPer = Math.max(maxPer, mk[k] - mk[k - 1])
     const lo = Math.max(0, Math.floor(mk[0] - 3 * maxPer))
     const hi = Math.min(x.length, Math.ceil(mk[M - 1] + 3 * maxPer) + 1)
-    const acc = new Float32Array(hi - lo)
-    const wsum = new Float32Array(hi - lo)
+    // reuse accumulators across segments (ping-pong so the deferred in-place write stays valid)
+    const need = hi - lo
+    if (pool[slot].length < need) pool[slot] = new Float32Array(Math.max(need, (pool[slot].length * 3) >> 1))
+    const acc = pool[slot].subarray(0, need)
+    acc.fill(0)
+    if (wsPool.length < need) wsPool = new Float32Array(Math.max(need, (wsPool.length * 3) >> 1))
+    const wsum = wsPool.subarray(0, need)
+    wsum.fill(0)
+    slot ^= 1
     let t = mk[0]
     let k = 0 // nearest analysis mark
     let j = 0 // interval containing t

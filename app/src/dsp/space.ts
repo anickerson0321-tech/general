@@ -34,39 +34,29 @@ export interface WetBus {
 /**
  * 100%-wet stereo FDN reverb of `send`, normalised so that its energy equals the
  * (unfiltered) send energy, scaled by `gain` and ADDED to `bus`.
- * `send` is band-limited IN PLACE; `scratchL/R` (same length) receive the raw tank output.
+ * Low-memory: the band-limited send lives in a small ring buffer; the tank's left output
+ * goes to `scratchL` and its right output is written back INTO `send` (which is consumed).
  */
-export function addReverb(
-  send: Float32Array,
-  sr: number,
-  p: ReverbParams,
-  gain: number,
-  bus: WetBus,
-  scratchL: Float32Array,
-  scratchR: Float32Array,
-): void {
+export function addReverb(send: Float32Array, sr: number, p: ReverbParams, gain: number, bus: WetBus, scratchL: Float32Array): void {
   const n = send.length
-  let eIn = 0
-  for (let i = 0; i < n; i++) eIn += send[i] * send[i]
-  const x = send
   const pre = [...butterworth('highpass', p.lowCutHz, sr, 2), designBiquad('lowpass', Math.min(p.highCutHz, sr * 0.42), sr, 0.6)]
   const fst = cascadeState(pre)
-  for (let b0 = 0; b0 < n; b0 += STREAM_BLOCK) cascadeStream(x.subarray(b0, Math.min(n, b0 + STREAM_BLOCK)), pre, fst)
   const left = scratchL
-  const right = scratchR
-  left.fill(0, 0, n)
-  right.fill(0, 0, n)
+  const right = send
   const preD = Math.max(0, Math.round((p.preDelayMs / 1000) * sr))
 
   // early reflections (room character)
   const erMs = [7.1, 11.3, 16.9, 23.4, 29.8, 37.2, 44.1]
   const erG = [0.8, 0.7, 0.62, 0.5, 0.42, 0.33, 0.26]
-  if (p.early > 0.001) {
-    for (let t = 0; t < erMs.length; t++) {
-      const d = preD + Math.round(((erMs[t] * (0.6 + p.size)) / 1000) * sr)
-      addDelayed(t & 1 ? right : left, x, d, p.early * erG[t])
-    }
-  }
+  const useEr = p.early > 0.001
+  const erD = erMs.map((m) => preD + Math.round(((m * (0.6 + p.size)) / 1000) * sr))
+  const erGain = erG.map((g) => p.early * g)
+  // ring of the band-limited send: covers pre-delay + longest reflection + one block
+  let RS = 1
+  while (RS < Math.max(preD, ...erD) + STREAM_BLOCK + 8) RS <<= 1
+  const RM = RS - 1
+  const ring = new Float32Array(RS)
+
   // input diffusers (Schroeder all-passes), streamed in blocks
   const apMs = [4.77, 3.6, 12.73, 9.31]
   const apG = [0.75, 0.75, 0.625, 0.625].map((g) => g * p.diffusion)
@@ -99,15 +89,39 @@ export function addReverb(
     tank.g[k] = Math.pow(10, (-3 * dl[k]) / (sr * Math.max(0.1, p.decaySec)))
     tank.dmp[k] = 1 - Math.min(0.85, p.damping * (0.35 + dl[k] / sr / 0.15))
   }
+  const blk = new Float32Array(STREAM_BLOCK)
   const v = new Float32Array(STREAM_BLOCK)
+  const oL = new Float32Array(STREAM_BLOCK)
+  const oR = new Float32Array(STREAM_BLOCK)
+  let eIn = 0
   for (let b0 = 0; b0 < n; b0 += STREAM_BLOCK) {
     const m = Math.min(STREAM_BLOCK, n - b0)
     for (let j = 0; j < m; j++) {
+      const raw = send[b0 + j]
+      eIn += raw * raw
+      blk[j] = raw
+    }
+    cascadeStream(blk, pre, fst, m)
+    for (let j = 0; j < m; j++) ring[(b0 + j) & RM] = blk[j]
+    oL.fill(0)
+    oR.fill(0)
+    if (useEr)
+      for (let t = 0; t < erD.length; t++) {
+        const d = erD[t]
+        const gg = erGain[t]
+        const dst = t & 1 ? oR : oL
+        for (let j = Math.max(0, d - b0); j < m; j++) dst[j] += gg * ring[(b0 + j - d) & RM]
+      }
+    for (let j = 0; j < m; j++) {
       const i = b0 + j
-      v[j] = i - preD >= 0 ? x[i - preD] : 0
+      v[j] = i - preD >= 0 ? ring[(i - preD) & RM] : 0
     }
     for (let a = 0; a < 4; a++) allpassBlock(v, m, aps[a], apG[a])
-    fdnBlock(tank, v, m, b0, left, right)
+    fdnBlock(tank, v, m, b0, oL, oR)
+    for (let j = 0; j < m; j++) {
+      left[b0 + j] = oL[j]
+      right[b0 + j] = oR[j] // the send sample at b0+j is already safe in the ring
+    }
   }
   // width (M/S), energy normalisation, accumulate
   const wd = Math.max(0, Math.min(1, p.width))
@@ -143,11 +157,6 @@ function allpassBlock(v: Float32Array, m: number, ap: { ring: Float32Array; idx:
   ap.idx = idx
 }
 
-function addDelayed(dst: Float32Array, src: Float32Array, d: number, gg: number): void {
-  const n = dst.length
-  for (let i = d; i < n; i++) dst[i] += gg * src[i - d]
-}
-
 interface FdnTank {
   buf: Float32Array
   S: number
@@ -160,7 +169,7 @@ interface FdnTank {
   st: Float64Array
 }
 
-/** Run the tank over one block of diffused input v[0..m) at absolute sample offset i0, adding to left/right. */
+/** Run the tank over one block of diffused input v[0..m) at absolute sample offset i0, adding to out blocks oL/oR[0..m). */
 function fdnBlock(tk: FdnTank, v: Float32Array, m: number, i0: number, left: Float32Array, right: Float32Array): void {
   const { buf, S, modDepth, sr } = tk
   const M = S - 1
@@ -246,8 +255,8 @@ function fdnBlock(tk: FdnTank, v: Float32Array, m: number, i0: number, left: Flo
     buf[S6 + wi] = (b2 - b6) * h + inj
     buf[S7 + wi] = (b3 - b7) * h - inj
     // orthogonal output taps
-    left[i] += l0 - l1 + l2 - l3 + l4 - l5 + l6 - l7
-    right[i] += l0 + l1 - l2 - l3 + l4 + l5 - l6 - l7
+    left[j] += l0 - l1 + l2 - l3 + l4 - l5 + l6 - l7
+    right[j] += l0 + l1 - l2 - l3 + l4 + l5 - l6 - l7
   }
   st[0] = l0
   st[1] = l1
