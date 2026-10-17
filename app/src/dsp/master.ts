@@ -1,28 +1,29 @@
 // Mastering helpers: BS.1770-style integrated loudness (K-weighting + gating)
 // and a zero-latency (offline look-ahead) true-peak-aware stereo limiter.
 
-import { biquad, designBiquad } from './biquad'
+import { designBiquad } from './biquad'
 
 /** Integrated loudness in LUFS of the given channels (-Infinity for silence). */
 export function integratedLoudness(channels: Float32Array[], sr: number): number {
   if (channels.length === 0 || channels[0].length === 0) return -Infinity
   const n = channels[0].length
+  // identical channels (dual mono): filter once, count twice
+  const uniq: Float32Array[] = []
+  const weight: number[] = []
+  for (const ch of channels) {
+    const k = uniq.indexOf(ch)
+    if (k >= 0) weight[k]++
+    else {
+      uniq.push(ch)
+      weight.push(1)
+    }
+  }
   const shelf = designBiquad('highshelf', 1681.974450955533, sr, 0.7071752369554196, 3.999843853973347)
   const hp = designBiquad('highpass', 38.13547087602444, sr, 0.5003270373238773)
   const step = Math.max(1, Math.round(0.1 * sr))
   const nSteps = Math.ceil(n / step)
   const stepPow = new Float64Array(nSteps)
-  for (const ch of channels) {
-    const k = new Float32Array(ch)
-    biquad(k, shelf)
-    biquad(k, hp)
-    for (let s = 0; s < nSteps; s++) {
-      let acc = 0
-      const e = Math.min(n, (s + 1) * step)
-      for (let i = s * step; i < e; i++) acc += k[i] * k[i]
-      stepPow[s] += acc
-    }
-  }
+  for (let c = 0; c < uniq.length; c++) kWeightedStepPower(uniq[c], weight[c], shelf, hp, step, stepPow)
   const blocks: number[] = []
   if (nSteps < 4) {
     let acc = 0
@@ -42,6 +43,47 @@ export function integratedLoudness(channels: Float32Array[], sr: number): number
   const rel = abs.filter((z) => lufs(z) > relGate)
   if (rel.length === 0) return -Infinity
   return lufs(rel.reduce((a, b) => a + b, 0) / rel.length)
+}
+
+/** K-weight (two biquads, fused) and accumulate weighted power per `step` samples. */
+function kWeightedStepPower(
+  x: Float32Array,
+  wgt: number,
+  f1: { b0: number; b1: number; b2: number; a1: number; a2: number },
+  f2: { b0: number; b1: number; b2: number; a1: number; a2: number },
+  step: number,
+  stepPow: Float64Array,
+): void {
+  const n = x.length
+  const { b0, b1, b2, a1, a2 } = f1
+  const c0 = f2.b0
+  const c1 = f2.b1
+  const c2 = f2.b2
+  const d1 = f2.a1
+  const d2 = f2.a2
+  let z1 = 0
+  let z2 = 0
+  let q1 = 0
+  let q2 = 0
+  let acc = 0
+  let s = 0
+  let cnt = 0
+  for (let i = 0; i < n; i++) {
+    const v = x[i]
+    const y = b0 * v + z1
+    z1 = b1 * v - a1 * y + z2
+    z2 = b2 * v - a2 * y
+    const u = c0 * y + q1
+    q1 = c1 * y - d1 * u + q2
+    q2 = c2 * y - d2 * u
+    acc += u * u
+    if (++cnt === step) {
+      stepPow[s++] += wgt * acc
+      acc = 0
+      cnt = 0
+    }
+  }
+  if (cnt > 0) stepPow[s] += wgt * acc
 }
 
 // 4x polyphase windowed-sinc interpolator taps (8 taps per phase) for true-peak estimation
@@ -109,7 +151,7 @@ export function limitStereo(left: Float32Array, right: Float32Array, sr: number,
   if (n === 0) return 0
   const ceil = Math.pow(10, p.ceilingDb / 20)
   const target = ceil * 0.995
-  const env = truePeakEnvelope([left, right], target * 0.5)
+  const env = truePeakEnvelope([left, right], target * 0.7)
   const L = Math.max(1, Math.round(((p.lookaheadMs ?? 2) / 1000) * sr))
   // per-sample required gain
   const req = new Float32Array(n)

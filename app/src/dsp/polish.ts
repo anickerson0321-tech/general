@@ -12,6 +12,7 @@ import type { PitchTrack } from './pitch'
 import type { CleanTrack } from './track'
 import type { ResolvedChain } from './chain'
 import { analyzePitch } from './pitch'
+import { fft } from './fft'
 import { biquad, butterworth, dcBlock, designBiquad } from './biquad'
 import { levelParams } from './chain'
 import { spectralDenoise } from './denoise'
@@ -77,30 +78,42 @@ function measureLevels(x: Float32Array, sr: number, ct: CleanTrack | null): Leve
   return { voiceDb, noiseDb }
 }
 
-/** Long-term spectral tilt (dB/octave, 250 Hz–8 kHz) over voiced material. */
+/** Long-term spectral tilt (dB/octave, 250 Hz–8 kHz) over voiced material, from sampled FFT frames. */
 function measureTilt(x: Float32Array, sr: number, ct: CleanTrack): number {
-  const centers = [250, 500, 1000, 2000, 4000, 8000].filter((f) => f < sr * 0.42)
+  const centers = [250, 500, 1000, 2000, 4000, 8000].filter((f) => f * 1.41 < sr * 0.5)
   if (centers.length < 4) return NaN
-  const mask = new Uint8Array(Math.ceil(x.length / 256))
-  let any = 0
-  for (let b = 0; b < mask.length; b++) {
-    const f = Math.round((b * 256 + 128) / sr / ct.hopSec)
-    mask[b] = f < ct.n && ct.voiced[f] ? 1 : 0
-    any += mask[b]
+  const N = 2048
+  const starts: number[] = []
+  for (let f = 0; f < ct.n; f++) {
+    if (!ct.voiced[f]) continue
+    const s0 = Math.round(f * ct.hopSec * sr) - N / 2
+    if (s0 >= 0 && s0 + N <= x.length) starts.push(s0)
   }
-  if (any < 20) return NaN
-  const ys: number[] = []
-  const xs: number[] = []
-  const tmp = new Float32Array(x.length)
-  for (const fc of centers) {
-    tmp.set(x)
-    biquad(tmp, designBiquad('bandpass', fc, sr, 1.41))
-    biquad(tmp, designBiquad('bandpass', fc, sr, 1.41))
-    let e = 0
-    for (let i = 0; i < tmp.length; i++) if (mask[i >> 8]) e += tmp[i] * tmp[i]
-    ys.push(10 * Math.log10(e + 1e-20))
-    xs.push(Math.log2(fc / 1000))
+  if (starts.length < 20) return NaN
+  const MAXF = 400
+  const pick: number[] = []
+  const stride = Math.max(1, starts.length / MAXF)
+  for (let k = 0; k < starts.length && pick.length < MAXF; k += stride) pick.push(starts[Math.floor(k)])
+  const re = new Float64Array(N)
+  const im = new Float64Array(N)
+  const bandE = new Float64Array(centers.length)
+  const binHz = sr / N
+  for (const s0 of pick) {
+    for (let i = 0; i < N; i++) {
+      re[i] = x[s0 + i] * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N))
+      im[i] = 0
+    }
+    fft(re, im)
+    for (let b = 0; b < centers.length; b++) {
+      const k0 = Math.max(1, Math.floor(centers[b] / Math.SQRT2 / binHz))
+      const k1 = Math.min(N / 2, Math.ceil((centers[b] * Math.SQRT2) / binHz))
+      let e = 0
+      for (let k = k0; k < k1; k++) e += re[k] * re[k] + im[k] * im[k]
+      bandE[b] += e
+    }
   }
+  const xs = centers.map((f) => Math.log2(f / 1000))
+  const ys = Array.from(bandE, (e) => 10 * Math.log10(e + 1e-20))
   const mx = xs.reduce((a, b) => a + b, 0) / xs.length
   const my = ys.reduce((a, b) => a + b, 0) / ys.length
   let num = 0
@@ -110,6 +123,50 @@ function measureTilt(x: Float32Array, sr: number, ct: CleanTrack): number {
     den += (xs[i] - mx) * (xs[i] - mx)
   }
   return num / den
+}
+
+/** 2:1 decimation with an 8th-order Butterworth anti-alias filter at ~0.22·sr. */
+function decimate2(x: Float32Array, sr: number): Float32Array {
+  const tmp = new Float32Array(x)
+  for (const s of butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 8)) biquad(tmp, s)
+  const m = Math.ceil(x.length / 2)
+  const out = new Float32Array(m)
+  for (let i = 0; i < m; i++) out[i] = tmp[2 * i]
+  return out
+}
+
+/** 1:2 interpolation (linear + 4th-order low-pass at ~0.22·sr) to exactly `n` samples. */
+function upsample2(x: Float32Array, n: number, sr: number): Float32Array {
+  const out = new Float32Array(n)
+  const m = x.length
+  for (let i = 0; i < n; i++) {
+    const j = i >> 1
+    if (j >= m) break
+    out[i] = i & 1 ? 0.5 * (x[j] + (j + 1 < m ? x[j + 1] : 0)) : x[j]
+  }
+  for (const s of butterworth('lowpass', Math.min(10500, sr * 0.22), sr, 4)) biquad(out, s)
+  return out
+}
+
+function mixInto(
+  wetL: Float32Array,
+  wetR: Float32Array,
+  send: Float32Array | null,
+  src: { left: Float32Array; right: Float32Array },
+  gain: number,
+  sendGain: number,
+): void {
+  const n = wetL.length
+  const l = src.left
+  const r = src.right
+  for (let i = 0; i < n; i++) {
+    wetL[i] += gain * l[i]
+    wetR[i] += gain * r[i]
+  }
+  if (send && sendGain > 0) {
+    const sg = gain * sendGain
+    for (let i = 0; i < n; i++) send[i] += sg * (l[i] + r[i])
+  }
 }
 
 function shiftNotes(notes: MelodyNote[], offset: number, durSec: number): MelodyNote[] {
@@ -135,7 +192,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
 
   // ---- 2. pitch analysis (cached if provided)
   report(0.01, 'Analysing pitch')
-  const track = params.analysis ?? analyzePitch(input, (f) => report(0.25 * f, 'Analysing pitch'))
+  const track = params.analysis ?? analyzePitch(input, (f) => report(0.01 + 0.24 * f, 'Analysing pitch'))
   const ct = prepareTrack(track)
   report(0.25, 'Cleaning up')
 
@@ -223,15 +280,21 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   const lead = x
   report(0.68, 'Adding space')
 
-  // ---- 10. space
-  const left = new Float32Array(lead)
-  const right = new Float32Array(lead)
-  const revSend = new Float32Array(lead)
+  // ---- 10. space — the wet bus runs at half rate (all returns are band-limited < 10 kHz)
+  const half = sr >= 44100
+  const wsr = half ? sr / 2 : sr
+  const leadW = half ? decimate2(lead, sr) : lead
+  const nW = leadW.length
+  const wetL = new Float32Array(nW)
+  const wetR = new Float32Array(nW)
+  const revSend = new Float32Array(leadW)
+  let anyWet = false
   if (ch.doubleMix > 0.001 && !silent) {
+    anyWet = true
     const hop = ct.hopSec
     const f0c = new Float32Array(ct.n)
     for (let i = 0; i < ct.n; i++) f0c[i] = ct.f0[i] * (shiftPlan ? Math.pow(2, shiftPlan[i] / 12) : 1)
-    const marks = detectMarks(lead, sr, f0c, hop)
+    const marks = detectMarks(leadW, wsr, f0c, hop)
     const wanderA = new Float32Array(ct.n)
     const wanderB = new Float32Array(ct.n)
     for (let i = 0; i < ct.n; i++) {
@@ -240,22 +303,19 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       wanderB[i] = 0.03 * Math.sin(2 * Math.PI * 0.19 * t + 2) + 0.015 * Math.sin(2 * Math.PI * 0.53 * t)
     }
     const det = ch.doubleDetuneCents / 100
-    const dA = psolaShift(lead, marks, { shift: wanderA, hopSec: hop, offset: det })
-    const dB = psolaShift(lead, marks, { shift: wanderB, hopSec: hop, offset: -det })
-    const dbl = placeDoubles(dA, dB, sr, {
+    const dA = psolaShift(leadW, marks, { shift: wanderA, hopSec: hop, offset: det })
+    const dB = psolaShift(leadW, marks, { shift: wanderB, hopSec: hop, offset: -det })
+    const dbl = placeDoubles(dA, dB, wsr, {
       delayMsL: ch.doubleDelayMs,
       delayMsR: ch.doubleDelayMs * 1.45,
       wanderMs: 2.5,
       width: ch.doubleWidth,
     })
-    for (let i = 0; i < n; i++) {
-      left[i] += ch.doubleMix * dbl.left[i]
-      right[i] += ch.doubleMix * dbl.right[i]
-      revSend[i] += 0.5 * ch.doubleMix * (dbl.left[i] + dbl.right[i])
-    }
+    mixInto(wetL, wetR, revSend, dbl, ch.doubleMix, 0.5)
   }
   if (ch.slapMix > 0.001) {
-    const slap = renderDelay(lead, sr, {
+    anyWet = true
+    const slap = renderDelay(leadW, wsr, {
       msL: ch.slapMs,
       msR: ch.slapMs * 1.13,
       feedback: 0,
@@ -264,14 +324,11 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       highCutHz: 5500,
       duckDb: 3,
     })
-    for (let i = 0; i < n; i++) {
-      left[i] += ch.slapMix * slap.left[i]
-      right[i] += ch.slapMix * slap.right[i]
-      revSend[i] += 0.3 * ch.slapMix * (slap.left[i] + slap.right[i])
-    }
+    mixInto(wetL, wetR, revSend, slap, ch.slapMix, 0.3)
   }
   if (ch.echoMix > 0.001) {
-    const echo = renderDelay(lead, sr, {
+    anyWet = true
+    const echo = renderDelay(leadW, wsr, {
       msL: ch.echoMsL,
       msR: ch.echoMsR,
       feedback: ch.echoFeedback,
@@ -280,15 +337,12 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       highCutHz: 4500,
       duckDb: 8,
     })
-    for (let i = 0; i < n; i++) {
-      left[i] += ch.echoMix * echo.left[i]
-      right[i] += ch.echoMix * echo.right[i]
-      revSend[i] += 0.3 * ch.echoMix * (echo.left[i] + echo.right[i])
-    }
+    mixInto(wetL, wetR, revSend, echo, ch.echoMix, 0.3)
   }
   report(0.78, 'Adding reverb')
   if (ch.reverbMix > 0.001) {
-    const rev = renderReverb(revSend, sr, {
+    anyWet = true
+    const rev = renderReverb(revSend, wsr, {
       decaySec: ch.reverbDecaySec,
       size: ch.reverbSize,
       damping: ch.reverbDamping,
@@ -299,9 +353,16 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
       highCutHz: 9000,
       width: 1,
     })
+    mixInto(wetL, wetR, null, rev, ch.reverbMix, 0)
+  }
+  const left = new Float32Array(lead)
+  const right = new Float32Array(lead)
+  if (anyWet) {
+    const upL = half ? upsample2(wetL, n, sr) : wetL
+    const upR = half ? upsample2(wetR, n, sr) : wetR
     for (let i = 0; i < n; i++) {
-      left[i] += ch.reverbMix * rev.left[i]
-      right[i] += ch.reverbMix * rev.right[i]
+      left[i] += upL[i]
+      right[i] += upR[i]
     }
   }
   report(0.9, 'Mastering')
@@ -309,7 +370,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
   // ---- 11. loudness + limiter
   const rawL = new Float32Array(input.data)
   sanitize(rawL)
-  const inLufs = integratedLoudness([rawL, rawL], sr)
+  const inLufs = integratedLoudness([rawL, rawL], sr) // dual-mono, filtered once
   const curLufs = integratedLoudness([left, right], sr)
   if (curLufs > -90 && !silent) {
     const keep = inLufs > -90 ? inLufs : curLufs
@@ -317,7 +378,7 @@ export function polishVocal(input: MonoBuffer, params: PolishParams, onProgress?
     let gDb = clamp(want - curLufs, -40, 40)
     const preL = new Float32Array(left)
     const preR = new Float32Array(right)
-    for (let iter = 0; iter < 3; iter++) {
+    for (let iter = 0; iter < 2; iter++) {
       const g = Math.pow(10, gDb / 20)
       for (let i = 0; i < n; i++) {
         left[i] = preL[i] * g

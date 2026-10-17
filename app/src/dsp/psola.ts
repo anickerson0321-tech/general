@@ -167,6 +167,7 @@ export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions): Fl
   const preserve = opt.formantPreserve !== false
   const offset = opt.offset ?? 0
   const fadeN = Math.max(8, Math.round((opt.fadeSec ?? 0.006) * sr))
+  const xl = x.length
   const shiftAt = (n: number): number => {
     const fpos = n / sr / hopSec
     const i = Math.floor(fpos)
@@ -205,14 +206,43 @@ export function psolaShift(x: Float32Array, marks: Marks, opt: PsolaOptions): Fl
       const n0 = Math.max(lo, Math.ceil(t - left))
       const n1 = Math.min(hi - 1, Math.floor(t + right))
       const ck = mk[k]
-      for (let n = n0; n <= n1; n++) {
-        const u = (n - t) * scale
-        let w: number
-        if (u < 0) w = 0.5 + 0.5 * Math.cos((Math.PI * u) / L)
-        else w = 0.5 + 0.5 * Math.cos((Math.PI * u) / R)
-        if (w <= 0) continue
-        acc[n - lo] += w * cubicAt(x, ck + u)
-        wsum[n - lo] += w
+      // left half then right half; Hann values via the Chebyshev cosine recurrence
+      for (let half = 0; half < 2; half++) {
+        const span = half === 0 ? L : R
+        const a = half === 0 ? n0 : Math.max(n0, Math.ceil(t))
+        const b = half === 0 ? Math.min(n1, Math.ceil(t) - 1) : n1
+        if (b < a) continue
+        const th = (Math.PI * scale) / span // phase step per output sample
+        let u0 = (a - t) * scale
+        const cs = Math.cos(th)
+        let cPrev = Math.cos((Math.PI * (u0 - scale)) / span)
+        let cCur = Math.cos((Math.PI * u0) / span)
+        let pos = ck + u0
+        for (let nn = a; nn <= b; nn++) {
+          const w = 0.5 + 0.5 * cCur
+          if (w > 0) {
+            const ii = Math.floor(pos)
+            const f = pos - ii
+            let v: number
+            if (ii >= 1 && ii + 2 < xl) {
+              const xm1 = x[ii - 1]
+              const x0 = x[ii]
+              const x1 = x[ii + 1]
+              const x2 = x[ii + 2]
+              const c1 = 0.5 * (x1 - xm1)
+              const c2 = xm1 - 2.5 * x0 + 2 * x1 - 0.5 * x2
+              const c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1)
+              v = ((c3 * f + c2) * f + c1) * f + x0
+            } else v = cubicAt(x, pos)
+            acc[nn - lo] += w * v
+            wsum[nn - lo] += w
+          }
+          const cNext = 2 * cs * cCur - cPrev
+          cPrev = cCur
+          cCur = cNext
+          pos += scale
+          u0 += scale
+        }
       }
       while (j + 2 < M && mk[j + 1] <= t) j++
       const P = mk[j + 1] - mk[j]

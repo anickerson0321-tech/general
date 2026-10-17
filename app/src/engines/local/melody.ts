@@ -1,5 +1,5 @@
 // Vocal melody writer: syllables -> rhythm on the beat grid (DP) -> singable pitch contour.
-import type { LinePlan, MotifKey, SectionPlan, SongPlan, VNote } from './model'
+import type { MotifKey, SectionPlan, SongPlan, VNote } from './model'
 import { beatToSec, chordAt } from './model'
 import { Rng, mixSeed } from './rng'
 import type { SylPhones } from './syllables'
@@ -347,6 +347,7 @@ export function composeMelody(plan: SongPlan): VNote[] {
   const sync = 0.3 + plan.weirdness * 0.6 + (['rnb', 'hiphop', 'trap', 'latin', 'reggae', 'kpop', 'pop'].includes(plan.profile.genre) ? 0.3 : 0)
   for (const sec of plan.sections) {
     const nLines = sec.lines.length
+    prevStep = null
     sec.lines.forEach((line, li) => {
       const role4 = [0, 1, 0, 2][li % 4]
       const isLast = li === nLines - 1
@@ -358,7 +359,7 @@ export function composeMelody(plan: SongPlan): VNote[] {
       const rhSeed = mixSeed(plan.seed, motifGroup(motif), 'rhythm', li % 2, syl.length)
       const rh = fitRhythm(syl, line.beats, rhSeed, sync)
       const pSeed = mixSeed(plan.seed, motifGroup(motif), 'pitch', role, isLast ? 1 : 0)
-      const steps = pitchLine(pc, sec, line, syl, rh, role, isLast && sec.motif !== 'pre', li === 0 ? prevStep : steps0(line), pSeed)
+      const steps = pitchLine(pc, sec, line, syl, rh, role, isLast && sec.motif !== 'pre', prevStep, pSeed)
       const notes: VNote[] = []
       for (let i = 0; i < syl.length; i++) {
         const pos16 = line.startBeat * 4 + rh.on[i]
@@ -426,10 +427,6 @@ export function composeMelody(plan: SongPlan): VNote[] {
   }
   plan.melody = all
   return all
-}
-
-function steps0(_line: LinePlan): number | null {
-  return null
 }
 
 /** Hook motif for intros / instrumental sections: first two lines of the first chorus, else generated. */

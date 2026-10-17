@@ -90,7 +90,7 @@ export async function writeLyricsFor(description: string, style: string, engine:
     }
   }
   const prof = analyzeStyle(style || description)
-  const r = generateLocalLyrics(description, seed, { genre: prof.genre, mood: prof.mood })
+  const r = generateLocalLyrics(description, seed, { genre: prof.genre, mood: prof.moods[0] })
   return { title: r.title, lyrics: r.lyrics, style: undefined as string | undefined }
 }
 

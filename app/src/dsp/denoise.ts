@@ -17,7 +17,7 @@ export interface DenoiseResult {
 export function spectralDenoise(x: Float32Array, sr: number, depthDb: number): DenoiseResult {
   const n = x.length
   if (depthDb <= 0.05 || n < 4096) return { out: new Float32Array(x), depthDb: 0, noiseDb: -120 }
-  const N = sr > 32000 ? 2048 : 1024
+  const N = sr > 64000 ? 2048 : sr > 32000 ? 1024 : 512
   const H = N >> 1
   const K = (N >> 1) + 1
   const win = new Float64Array(N)

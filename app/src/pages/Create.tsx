@@ -52,7 +52,7 @@ export function CreatePage({ query }: { query: URLSearchParams }) {
 
   const enhanceStyle = () => {
     const prof = analyzeStyle(style || desc || suggestStyles(randomSeed()))
-    const extra = [prof.genre, prof.mood, ...prof.instruments.slice(0, 3), `${prof.bpm} bpm`, prof.vocalGender !== 'any' ? `${prof.vocalGender} vocals` : '']
+    const extra = [...prof.tags, ...prof.namedInstruments.slice(0, 3), `${prof.bpm} bpm`, prof.vocalGender !== 'any' ? `${prof.vocalGender} vocals` : '']
     const parts = style.split(',').map((s) => s.trim()).filter(Boolean)
     for (const e of extra) if (e && !parts.some((p) => p.toLowerCase() === e.toLowerCase())) parts.push(e)
     setStyle(parts.join(', '))
@@ -90,7 +90,7 @@ export function CreatePage({ query }: { query: URLSearchParams }) {
           return
         }
         const prof = analyzeStyle(desc)
-        const autoStyle = [prof.genre, prof.mood, prof.vocalGender !== 'any' ? `${prof.vocalGender} vocals` : '', ...prof.instruments.slice(0, 2)].filter(Boolean).join(', ')
+        const autoStyle = [prof.genreLabel, ...prof.moods.slice(0, 2), prof.vocalGender !== 'any' ? `${prof.vocalGender} vocals` : ''].filter(Boolean).join(', ')
         if (instrumental) f = { title: '', style: desc, lyrics: '', instrumental: true }
         else {
           const r = await writeLyricsFor(desc, '', model.engine)
