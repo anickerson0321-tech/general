@@ -6,7 +6,7 @@ import type { Bus } from './instruments'
 import type { SongPlan } from './model'
 
 export const TARGET_LUFS = -14
-export const CEILING = 0.881 // -1.1 dBFS
+export const CEILING = 0.861 // -1.3 dBFS sample peak (keeps true peak <= ~-1 dBTP)
 
 function rms(L: Float32Array, R: Float32Array, from = 0, to = L.length): number {
   let s = 0
@@ -45,6 +45,8 @@ export function processInstrumental(bus: Bus, plan: SongPlan): void {
   applyReverb(bus.rev, bus.L, bus.R, { room: 0.62 + p.reverb * 0.32, damp: g === 'lofi' ? 0.7 : 0.45, wet: 1, predelayMs: 18, size, hpHz: 220, lpHz: g === 'lofi' ? 5000 : 8500 })
   const dsec = plan.spb * (g === 'synthwave' || g === 'edm' || g === 'kpop' ? 0.75 : 0.5)
   applyDelay(bus.dly, bus.L, bus.R, dsec, 0.38, 0.55, g === 'lofi' ? 2500 : 4500)
+  bus.rev = new Float32Array(0)
+  bus.dly = new Float32Array(0)
   const filters: Array<() => Biquad> = [() => new Biquad('highpass', 28, 0.7), () => new Biquad('peak', 320, 0.8, -1.5)]
   if (g === 'lofi' || p.instruments.vinyl) filters.push(() => new Biquad('lowpass', 7200, 0.6))
   else {
@@ -66,6 +68,8 @@ export function processVocals(bus: Bus, plan: SongPlan): void {
   applyReverb(bus.rev, bus.L, bus.R, { room: 0.66 + big * 0.28, damp: 0.38, wet: 0.95, predelayMs: 38, size: 0.95, hpHz: 300, lpHz: 9000 })
   const d = plan.spb * (g === 'rock' || g === 'punk' || g === 'metal' ? 0.5 : 0.75)
   applyDelay(bus.dly, bus.L, bus.R, d, 0.3, 0.5, 4000)
+  bus.rev = new Float32Array(0)
+  bus.dly = new Float32Array(0)
 }
 
 export interface Masters {
@@ -93,7 +97,8 @@ export function master(inst: Bus, voc: Bus | null, plan: SongPlan, vocalMask: Fl
   if (voc && vocalMask) {
     const vr = maskedRms(voc.L, voc.R, vocalMask) || 1e-6
     const ib = maskedRms(inst.L, inst.R, vocalMask) || 0.1
-    const rel = plan.profile.genre === 'rock' || plan.profile.genre === 'metal' || plan.profile.genre === 'punk' ? -1.5 : plan.profile.genre === 'edm' ? -1 : 0.5
+    const g = plan.profile.genre
+    const rel = g === 'rock' || g === 'metal' || g === 'punk' ? -3.5 : g === 'edm' || g === 'trap' ? -3 : g === 'folk' || g === 'ballad' || g === 'jazz' ? -1 : -2
     gv = (ib * dbToGain(rel)) / vr
   }
   const mixL = new Float32Array(n)

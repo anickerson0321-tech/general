@@ -245,7 +245,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
         bassNotes.push({ t: tS, dur: Math.max(0.05, (tE - tS) * gate), midi: m, vel: ev.c === 'R' && ev.p % 16 === 0 ? 1 : 0.85 })
       }
     }
-    const bassGain = kind === '808' ? 0.42 : kind === 'sub' ? 0.6 : kind === 'synth' ? 0.5 : 0.62
+    const bassGain = kind === '808' ? 0.42 : kind === 'sub' ? 0.36 : kind === 'synth' ? 0.5 : kind === 'upright' ? 0.45 : 0.62
     bassNotes.forEach((n, i) => renderBass(bus, kind, n, bassGain * n.vel, p.sidechain, mixSeed(seed, 'b', i), bright))
   }
   await step(0.4, 'Playing bass')
@@ -337,7 +337,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
         if (lvl >= 1) play(0, spanDur * 0.95, [bassM], 0.45, true)
       }
     }
-    for (const c of organChords) renderOrgan(bus, c, g === 'reggae' ? 0.42 : 0.36, 0, 0.2 * revAmt, g === 'gospel' || g === 'jazz')
+    for (const c of organChords) renderOrgan(bus, c, g === 'reggae' ? 0.42 : g === 'rock' ? 0.2 : 0.36, 0, 0.2 * revAmt, g === 'gospel' || g === 'jazz')
   }
   await step(0.5, 'Playing chords')
 
@@ -388,7 +388,7 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
       const bassN = pcInRange(span.chord.bass, 40)
       const full = kind === 'skank' ? v5.map((x) => (x < 60 ? x + 12 : x)) : [bassN, ...v5]
       const pan = gp.layer === 0 ? (guitarParts.length > 1 ? -0.4 : -0.3) : 0.4
-      const gain = kind === 'acoustic' ? 0.6 : kind === 'nylon' ? 0.6 : kind === 'skank' ? 0.6 : 0.48
+      const gain = kind === 'acoustic' ? 0.6 : kind === 'nylon' ? 0.9 : kind === 'skank' ? 1.3 : 0.48
       const rev = (kind === 'clean' ? 0.2 : 0.14) * revAmt
       if (final) {
         renderStrum(bus, kind, { t: t0, dur: 3, notes: full, vel: 0.75, dir: 1 }, gain, pan, rev, mixSeed(seed, 'gf'))
@@ -509,9 +509,8 @@ export async function arrange(plan: SongPlan, bus: Bus, step: Yield): Promise<Ar
     const hookMidis = plan.hook.map((h) => h.midi)
     const hookShift = transpose(hookMidis)
     for (const s of secs) {
-      const leadHere = s.motif === 'intro' || s.motif === 'inst' || s.motif === 'post' || (s.motif === 'outro' && s.beats >= 16) || (plan.instrumental && s.lines.length > 0)
+      const leadHere = (s.motif === 'intro' && s.beats >= 8) || s.motif === 'inst' || s.motif === 'post' || (s.motif === 'outro' && s.beats >= 8) || (plan.instrumental && s.lines.length > 0)
       if (!leadHere) continue
-      if (s.motif === 'intro' && s.energy < 0.25 && !plan.instrumental) continue
       if (plan.instrumental && s.lines.length) {
         const ns = s.lines.flatMap((l) => l.notes)
         const shift = transpose(ns.map((n) => n.midi))

@@ -235,7 +235,8 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
   const Tn = 0.12 + o.breath * 0.08
   const tc = Tp + Tn
   const eScale = (2 * Tn) / Math.PI
-  let norm = 1
+  let norm = 0
+  let normT = 1
   let f0 = 200
   let f0Next = 200
   let drift = 0
@@ -252,6 +253,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
   const attackS = Math.round(0.03 * SR)
   const breathAmt = 0.015 + o.breath * 0.08
   let lastY = 0
+  let tremolo = 1
   const pitchOf = (n: VNote) => (o.useHarm && n.harm !== undefined ? n.harm : n.midi) + o.detune / 100
   const computeMidi = (i: number): number => {
     const n = notes[ni]
@@ -325,7 +327,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
           const w = 1 / Math.pow(h, 0.8)
           p += g * g * w * w
         }
-        norm = 0.35 / Math.sqrt(p + 1e-9)
+        normT = 0.35 / Math.sqrt(p + 1e-9)
       }
       if (seg && seg.fric > 0) fric.set(seg.ff * (fem ? 1.08 : 1), seg.fq)
     }
@@ -366,6 +368,7 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
     const src = e * shim * vAmp + noise * (aAmp * 0.35 + vAmp * breathAmt * (0.25 + flow))
     let y = src
     for (let k = 0; k < 5; k++) y = res[k].process(y)
+    norm += (normT - norm) * 0.004
     y *= norm
     // radiation-ish tilt + band limiting
     y = lp.lp(hp.hp(y))
@@ -379,13 +382,19 @@ function renderPhrase(bus: Bus, notes: VNote[], o: VoiceOpts, idx: number): void
     const toEnd = len - 1 - i
     if (toEnd < endRel) env *= toEnd / endRel
     const n = notes[ni]
-    const out = (y + fr * 0.9) * env * (0.8 + 0.25 * n.vel)
+    // slight amplitude modulation that follows the vibrato (natural singers do this)
+    if ((i & 63) === 0) {
+      const tIn = (i - noteS0[ni]) / SR
+      const nd = n.end - n.start
+      tremolo = nd > 0.32 ? 1 + 0.07 * Math.min(1, Math.max(0, (tIn - 0.22) / 0.35)) * sinT((i / SR) * vibRate + vibPhase + 0.1) : 1
+    }
+    const out = (y + fr * 0.9) * env * tremolo * (0.8 + 0.25 * n.vel)
     buf[i] = out
     lastY = out
   }
   void lastY
   // vocal EQ on the phrase (mono, only where there is singing)
-  const eq = [new Biquad('peak', 350, 0.9, -2.5), new Biquad('highshelf', 2000, 0.6, 2), new Biquad('peak', fem ? 3300 : 2900, 1.0, 3), new Biquad('lowpass', 7500, 0.6)]
+  const eq = [new Biquad('highpass', fem ? 150 : 100, 0.7), new Biquad('peak', 350, 0.9, -2.5), new Biquad('highshelf', 2000, 0.6, 2), new Biquad('peak', fem ? 3300 : 2900, 1.0, 3), new Biquad('lowpass', 7500, 0.6)]
   for (const f of eq) f.run(buf, 0, len)
   bus.add(buf, len, Math.round(t0 * SR), o.gain, o.pan, o.rev, o.dly, false, o.tag)
 }

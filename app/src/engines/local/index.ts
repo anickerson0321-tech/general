@@ -96,12 +96,9 @@ export async function composeLocal(req: ComposeRequest, onProgress?: ProgressFn)
   processInstrumental(inst, plan)
   await progress(0.92, 'Mastering')
   const m = master(inst, voc, plan, mask)
-  // trim trailing silence (keep >= 0.6 s after the music)
-  let end = n
-  const minEnd = Math.min(n, Math.ceil((plan.musicSec + 0.6) * SR))
-  while (end > minEnd && Math.abs(m.mix.left[end - 1]) < 2e-4 && Math.abs(m.mix.right[end - 1]) < 2e-4) end--
-  // short fade to avoid a click at the very end
-  const fade = Math.min(end, Math.round(0.08 * SR))
+  // short fade so the very end never clicks (the buffer already includes a reverb tail)
+  const end = n
+  const fade = Math.min(end, Math.round(0.25 * SR))
   const bufs = [m.mix, m.instrumental, ...(m.vocals ? [m.vocals] : [])]
   for (const b of bufs) {
     for (let i = 0; i < fade; i++) {
@@ -110,7 +107,6 @@ export async function composeLocal(req: ComposeRequest, onProgress?: ProgressFn)
       b.right[end - 1 - i] *= g
     }
   }
-  const cut = (b: { sampleRate: number; left: Float32Array; right: Float32Array }) => (end === n ? b : { sampleRate: b.sampleRate, left: b.left.slice(0, end), right: b.right.slice(0, end) })
   const melody: MelodyNote[] = plan.instrumental
     ? arr.leadNotes.slice().sort((a, b) => a.start - b.start)
     : plan.melody.map((x) => ({ start: x.start, end: x.end, midi: x.midi, wordIndex: x.wordIndex }))
@@ -125,9 +121,9 @@ export async function composeLocal(req: ComposeRequest, onProgress?: ProgressFn)
   tags.push(`${plan.bpm} bpm`, keyName(plan.key))
   await progress(1, 'Done')
   return {
-    mix: cut(m.mix),
-    instrumental: cut(m.instrumental),
-    vocals: m.vocals ? cut(m.vocals) : undefined,
+    mix: m.mix,
+    instrumental: m.instrumental,
+    vocals: m.vocals,
     melody,
     timedLyrics: plan.instrumental ? [] : timedLyrics(plan),
     key: plan.key,

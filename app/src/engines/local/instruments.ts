@@ -42,8 +42,10 @@ export class Bus {
   readonly n: number
   readonly L: Float32Array
   readonly R: Float32Array
-  readonly rev: Float32Array
-  readonly dly: Float32Array
+  /** mono reverb send (released after the effect is applied) */
+  rev: Float32Array
+  /** mono delay send (released after the effect is applied) */
+  dly: Float32Array
   /** control-rate (every 64 samples) ducking gain, or null */
   duck: Float32Array | null = null
   readonly energy: Record<string, number> = {}
@@ -361,9 +363,17 @@ export function renderEPiano(bus: Bus, nIn: KeyNote, gain: number, pan: number, 
   bus.addAutoPan(out, len, sec2s(n.t), gain * nIn.vel * 0.42, 4.2, 0.35 * (pan === 0 ? 1 : 0.5), rev, 0, tag)
 }
 
-export function renderOrgan(bus: Bus, notes: KeyNote[], gain: number, pan: number, rev: number, perc: boolean, tag = 'organ'): void {
-  if (!notes.length) return
-  const t0 = Math.min(...notes.map((x) => x.t))
+export function renderOrgan(bus: Bus, notesIn: KeyNote[], gain: number, pan: number, rev: number, perc: boolean, tag = 'organ'): void {
+  if (!notesIn.length) return
+  const t0 = Math.min(...notesIn.map((x) => x.t))
+  // cache on the chord shape (relative timing), not on absolute time
+  const notes = notesIn.map((x) => ({ ...x, t: t0 + q(x.t - t0, 100), dur: q(x.dur, 50) }))
+  const key = `org|${notes.map((x) => `${x.midi}:${x.t - t0}:${x.dur}`).join(',')}|${perc ? 1 : 0}`
+  const hit = cacheGet(key)
+  if (hit) {
+    bus.addAutoPan(hit, hit.length, sec2s(t0), gain, 0.8, 0.3, rev, 0, tag)
+    return
+  }
   const t1 = Math.max(...notes.map((x) => x.t + x.dur))
   const len = Math.min(MAX_NOTE, Math.ceil((t1 - t0 + 0.06) * SR))
   const buf = scrA
@@ -394,7 +404,8 @@ export function renderOrgan(bus: Bus, notes: KeyNote[], gain: number, pan: numbe
     for (let i = 0; i < Math.min(nl, 140); i++) buf[s0 + i] += nz.next() * 0.04 * (1 - i / 140)
   }
   for (let i = 0; i < len; i++) buf[i] = softclip(buf[i] * 1.4)
-  bus.addAutoPan(buf, len, sec2s(t0), gain, 0.8, 0.3, rev, 0, tag)
+  const out = cachePut(key, buf, len)
+  bus.addAutoPan(out, len, sec2s(t0), gain, 0.8, 0.3, rev, 0, tag)
   void pan
 }
 
